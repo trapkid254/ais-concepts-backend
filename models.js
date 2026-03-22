@@ -100,6 +100,8 @@ const portalStateSchema = new mongoose.Schema({
   employeeTimeEntries: { type: [mongoose.Schema.Types.Mixed], default: [] },
   employeeProgress: { type: [mongoose.Schema.Types.Mixed], default: [] },
   employeeAssignmentStatus: { type: mongoose.Schema.Types.Mixed, default: {} },
+  adminClientProgressUpdates: { type: [mongoose.Schema.Types.Mixed], default: [] },
+  notifications: { type: [mongoose.Schema.Types.Mixed], default: [] },
   adminSettings: {
     invoiceDueDays: { type: String, default: '30' },
     emailNotif: { type: String, default: '1' },

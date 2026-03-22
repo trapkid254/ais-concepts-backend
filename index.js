@@ -6,6 +6,7 @@ const cookieParser = require('cookie-parser');
 const bcrypt = require('bcryptjs');
 const mongoose = require('mongoose');
 const multer = require('multer');
+const crypto = require('crypto');
 
 const { signToken, authMiddleware } = require('./auth');
 const models = require('./models');
@@ -41,6 +42,33 @@ function adminOnly(req, res, next) {
     return res.status(403).json({ error: 'Forbidden' });
   }
   next();
+}
+
+async function appendPortalNotification({ title, message, targets }) {
+  const id = crypto.randomUUID();
+  const notif = {
+    id,
+    createdAt: new Date().toISOString(),
+    title: title || 'Notification',
+    message: message || '',
+    targets: Array.isArray(targets) ? targets : [],
+    readBy: []
+  };
+  await models.PortalState.findOneAndUpdate(
+    { key: 'main' },
+    { $push: { notifications: notif } },
+    { upsert: true }
+  );
+  return notif;
+}
+
+function notificationVisibleForUser(user, n) {
+  const email = (user.email || '').toLowerCase();
+  const role = user.role;
+  const targets = n.targets || [];
+  if (targets.includes('*') && role === 'admin') return true;
+  if (targets.includes(email)) return true;
+  return false;
 }
 
 async function findUserForLogin(identifier) {
@@ -95,6 +123,15 @@ app.post('/api/auth/register', async (req, res) => {
       message:
         'Registration received. An administrator will approve your account before you can sign in.'
     });
+    try {
+      await appendPortalNotification({
+        title: 'New client registration',
+        message: `${name || email} (${email}) is awaiting approval.`,
+        targets: ['*']
+      });
+    } catch (e) {
+      console.error(e);
+    }
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'Server error' });
@@ -126,6 +163,15 @@ app.post('/api/auth/register-employee', async (req, res) => {
       message:
         'Registration received. An administrator will approve your account before you can sign in.'
     });
+    try {
+      await appendPortalNotification({
+        title: 'New employee registration',
+        message: `${name || email} (${email}) is awaiting approval.`,
+        targets: ['*']
+      });
+    } catch (e) {
+      console.error(e);
+    }
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'Server error' });
@@ -222,6 +268,15 @@ app.post('/api/admin/users/:id/approve', authMiddleware, adminOnly, async (req, 
     if (u.role === 'admin') return res.status(400).json({ error: 'Cannot change admin' });
     u.approvalStatus = 'approved';
     await u.save();
+    try {
+      await appendPortalNotification({
+        title: 'Account approved',
+        message: 'Your portal account is active. You can sign in anytime.',
+        targets: [String(u.email).toLowerCase()]
+      });
+    } catch (e) {
+      console.error(e);
+    }
     res.json({ ok: true });
   } catch (e) {
     console.error(e);
@@ -464,8 +519,222 @@ const PORTAL_KEYS = [
   'employeeTimeEntries',
   'employeeProgress',
   'employeeAssignmentStatus',
-  'adminSettings'
+  'adminSettings',
+  'adminClientProgressUpdates'
 ];
+
+app.get('/api/notifications', authMiddleware, requireApprovedAccount, async (req, res) => {
+  try {
+    const state = await models.PortalState.findOne({ key: 'main' }).lean();
+    const all = (state && state.notifications) || [];
+    const email = (req.user.email || '').toLowerCase();
+    const role = req.user.role;
+    const filtered = all.filter((n) => notificationVisibleForUser({ email, role }, n));
+    const items = filtered
+      .slice()
+      .reverse()
+      .map((n) => ({
+        id: n.id,
+        createdAt: n.createdAt,
+        title: n.title,
+        message: n.message,
+        read: (n.readBy || []).includes(email)
+      }));
+    const unreadCount = items.filter((x) => !x.read).length;
+    res.json({ items, unreadCount });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/api/notifications/mark-read', authMiddleware, requireApprovedAccount, async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body.ids) ? req.body.ids : [];
+    const email = (req.user.email || '').toLowerCase();
+    const doc = await models.PortalState.findOne({ key: 'main' });
+    const list = (doc && doc.notifications) || [];
+    list.forEach((n) => {
+      if (ids.length === 0 || ids.includes(n.id)) {
+        if (notificationVisibleForUser({ email, role: req.user.role }, n)) {
+          n.readBy = n.readBy || [];
+          if (!n.readBy.includes(email)) n.readBy.push(email);
+        }
+      }
+    });
+    await models.PortalState.findOneAndUpdate(
+      { key: 'main' },
+      { $set: { notifications: list } },
+      { upsert: true }
+    );
+    res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/api/portal/employee-progress', authMiddleware, requireApprovedAccount, async (req, res) => {
+  try {
+    const u = await models.User.findById(req.user.sub).lean();
+    if (!u || u.role !== 'employee') return res.status(403).json({ error: 'Employees only' });
+    const { project, description, images } = req.body;
+    if (!project || !String(description || '').trim()) {
+      return res.status(400).json({ error: 'Project and description required' });
+    }
+    const imgs = Array.isArray(images) ? images.slice(0, 8) : [];
+    const state = await models.PortalState.findOne({ key: 'main' }).lean();
+    const assignments = state.assignments || [];
+    const match = assignments.find(
+      (a) =>
+        String(a.project || '') === String(project) &&
+        String(a.employeeEmail || '').toLowerCase() === String(u.email).toLowerCase()
+    );
+    if (!match) return res.status(400).json({ error: 'No matching assignment for this project' });
+    const updates = [...(state.employeeTaskUpdates || [])];
+    updates.push({
+      taskId: project,
+      project,
+      description: String(description).trim(),
+      images: imgs,
+      imageData: imgs[0] || null,
+      date: new Date().toISOString(),
+      employeeEmail: u.email
+    });
+    await models.PortalState.findOneAndUpdate(
+      { key: 'main' },
+      { $set: { employeeTaskUpdates: updates } },
+      { upsert: true, new: true }
+    );
+    const snippet = String(description).trim().slice(0, 120);
+    await appendPortalNotification({
+      title: 'Employee progress update',
+      message: `${u.name || u.email} updated "${project}": ${snippet}${snippet.length < String(description).trim().length ? '…' : ''}`,
+      targets: ['*']
+    });
+    const clientEmail = (match.clientEmail || '').toLowerCase();
+    if (clientEmail) {
+      await appendPortalNotification({
+        title: 'Progress on ' + project,
+        message: `Your team posted an update: ${snippet}${snippet.length < String(description).trim().length ? '…' : ''}`,
+        targets: [clientEmail]
+      });
+    }
+    res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/api/admin/send-message', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const { to, project, body } = req.body;
+    if (!to || !body) return res.status(400).json({ error: 'Missing to or body' });
+    const from = (req.user.email || 'admin').toLowerCase();
+    const state = await models.PortalState.findOne({ key: 'main' }).lean();
+    const messages = [...(state.portalMessages || [])];
+    messages.push({
+      from,
+      to: String(to).toLowerCase(),
+      project: project || '',
+      body: String(body),
+      timestamp: new Date().toISOString()
+    });
+    await models.PortalState.findOneAndUpdate(
+      { key: 'main' },
+      { $set: { portalMessages: messages } },
+      { upsert: true }
+    );
+    await appendPortalNotification({
+      title: 'New message from AIS Concepts',
+      message: (String(body).slice(0, 200) + (String(body).length > 200 ? '…' : '')) || 'You have a new message.',
+      targets: [String(to).toLowerCase()]
+    });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/api/admin/client-progress-broadcast', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const { projectId, projectName, clientEmail, message, images } = req.body;
+    if (!clientEmail || !String(message || '').trim()) {
+      return res.status(400).json({ error: 'Client email and message required' });
+    }
+    const ce = String(clientEmail).toLowerCase();
+    const state = await models.PortalState.findOne({ key: 'main' }).lean();
+    const rows = [...(state.adminClientProgressUpdates || [])];
+    rows.push({
+      projectId: projectId || null,
+      projectName: projectName || '',
+      clientEmail: ce,
+      message: String(message).trim(),
+      images: Array.isArray(images) ? images.slice(0, 8) : [],
+      at: new Date().toISOString()
+    });
+    await models.PortalState.findOneAndUpdate(
+      { key: 'main' },
+      { $set: { adminClientProgressUpdates: rows } },
+      { upsert: true }
+    );
+    await appendPortalNotification({
+      title: 'Project update from your team',
+      message: `${projectName || 'Project'}: ${String(message).trim().slice(0, 200)}${String(message).trim().length > 200 ? '…' : ''}`,
+      targets: [ce]
+    });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/api/portal/client-project', authMiddleware, requireApprovedAccount, async (req, res) => {
+  try {
+    const u = await models.User.findById(req.user.sub).lean();
+    if (!u || u.role !== 'client') return res.status(403).json({ error: 'Clients only' });
+    const { name, description, deadline } = req.body;
+    if (!name || !String(name).trim()) return res.status(400).json({ error: 'Project name required' });
+    const state = await models.PortalState.findOne({ key: 'main' }).lean();
+    const projects = [...(state.portalProjects || [])];
+    const id = Date.now();
+    projects.push({
+      id,
+      name: String(name).trim(),
+      client: u.email,
+      budget: '',
+      progress: 0,
+      status: 'Pending',
+      category: 'Client request',
+      nextMilestone: 'Awaiting review',
+      completionDate: deadline || '',
+      description: String(description || '').trim(),
+      image: '',
+      moneyPaid: '',
+      moneyUsed: '',
+      moneyRemaining: '',
+      moneyOwed: '',
+      clientSubmitted: true
+    });
+    await models.PortalState.findOneAndUpdate(
+      { key: 'main' },
+      { $set: { portalProjects: projects } },
+      { upsert: true }
+    );
+    await appendPortalNotification({
+      title: 'Client submitted a new project',
+      message: `${u.name || u.email} added "${String(name).trim()}".`,
+      targets: ['*']
+    });
+    res.json({ ok: true, id });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
 
 app.get('/api/portal/bootstrap', authMiddleware, requireApprovedAccount, async (req, res) => {
   try {
@@ -493,13 +762,20 @@ app.get('/api/portal/bootstrap', authMiddleware, requireApprovedAccount, async (
       employeeTimeEntries: state.employeeTimeEntries || [],
       employeeProgress: state.employeeProgress || [],
       employeeAssignmentStatus: state.employeeAssignmentStatus || {},
-      adminSettings: state.adminSettings || {}
+      adminSettings: state.adminSettings || {},
+      adminClientProgressUpdates: state.adminClientProgressUpdates || []
     };
 
     if (req.user.role !== 'admin') {
       payload.portalUsers = [];
       if (req.user.role === 'client') {
         payload.careerApplications = [];
+        const email = (req.user.email || '').toLowerCase();
+        payload.adminClientProgressUpdates = (payload.adminClientProgressUpdates || []).filter(
+          (x) => String(x.clientEmail || '').toLowerCase() === email
+        );
+      } else {
+        payload.adminClientProgressUpdates = [];
       }
     }
 
