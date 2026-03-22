@@ -229,6 +229,59 @@ app.post('/api/admin/users/:id/approve', authMiddleware, adminOnly, async (req, 
   }
 });
 
+/** Approved clients/employees + admins — for User Management table */
+app.get('/api/admin/users', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const list = await models.User.find({
+      $or: [
+        { role: 'admin' },
+        { approvalStatus: 'approved' },
+        { role: { $in: ['client', 'employee'] }, approvalStatus: { $exists: false } }
+      ]
+    })
+      .select('-passwordHash')
+      .sort({ role: 1, name: 1 })
+      .lean();
+    res.json(
+      list.map((u) => ({
+        id: String(u._id),
+        name: u.name || u.email,
+        email: u.email,
+        role: u.role ? u.role.charAt(0).toUpperCase() + u.role.slice(1) : '',
+        status:
+          u.role === 'admin'
+            ? 'Active'
+            : u.approvalStatus === 'pending'
+              ? 'Pending'
+              : 'Active',
+        lastLogin: u.lastLogin ? new Date(u.lastLogin).toISOString() : '-'
+      }))
+    );
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.delete('/api/admin/users/:id', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    if (String(req.user.sub) === String(req.params.id)) {
+      return res.status(400).json({ error: 'Cannot delete your own account' });
+    }
+    const target = await models.User.findById(req.params.id);
+    if (!target) return res.status(404).json({ error: 'User not found' });
+    if (target.role === 'admin') {
+      const admins = await models.User.countDocuments({ role: 'admin' });
+      if (admins <= 1) return res.status(400).json({ error: 'Cannot delete the only admin' });
+    }
+    await models.User.deleteOne({ _id: target._id });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 /* ——— Public CMS ——— */
 app.get('/api/projects', async (req, res) => {
   try {
@@ -458,16 +511,18 @@ app.get('/api/portal/bootstrap', authMiddleware, requireApprovedAccount, async (
 });
 
 app.put('/api/portal/key/:key', authMiddleware, requireApprovedAccount, async (req, res) => {
+  const { key } = req.params;
   try {
-    const { key } = req.params;
     if (!PORTAL_KEYS.includes(key)) return res.status(400).json({ error: 'Invalid key' });
-    let state = await models.PortalState.findOne({ key: 'main' });
-    if (!state) state = new models.PortalState({ key: 'main' });
-    state[key] = req.body;
-    await state.save();
+    const body = req.body;
+    await models.PortalState.findOneAndUpdate(
+      { key: 'main' },
+      { $set: { [key]: body }, $setOnInsert: { key: 'main' } },
+      { upsert: true, new: true, runValidators: false }
+    );
     res.json({ ok: true });
   } catch (e) {
-    console.error(e);
+    console.error('PUT /api/portal/key/' + key, e.message || e);
     res.status(500).json({ error: 'Server error' });
   }
 });

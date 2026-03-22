@@ -203,14 +203,8 @@ async function run() {
     { key: 'main' },
     {
       key: 'main',
-      portalUsers: [
-        { id: 1, name: 'Demo Client', email: 'client@demo.com', role: 'client', status: 'Active', lastLogin: new Date().toISOString() },
-        { id: 2, name: 'Demo Employee', email: 'employee@demo.com', role: 'employee', status: 'Active', lastLogin: new Date().toISOString() }
-      ],
-      portalProjects: [
-        { id: 1, name: 'Horizon Tower', client: 'Acme Corp', budget: '$2.1M', progress: 65, status: 'In progress' },
-        { id: 2, name: 'Eco-Sphere Residence', client: 'Private', budget: '$890k', progress: 40, status: 'Design development' }
-      ],
+      portalUsers: [],
+      portalProjects: [],
       assignments: [],
       portalInvoices: [],
       portalMessages: [],
