@@ -9,6 +9,7 @@ const multer = require('multer');
 
 const { signToken, authMiddleware } = require('./auth');
 const models = require('./models');
+const { validatePasswordPolicy } = require('./passwordPolicy');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 12 * 1024 * 1024 } });
 
@@ -46,9 +47,9 @@ async function findUserForLogin(identifier) {
   const raw = (identifier || '').trim();
   if (!raw) return null;
   const lower = raw.toLowerCase();
-  let user = await models.User.findOne({ email: lower });
-  if (!user) user = await models.User.findOne({ username: lower });
-  return user;
+  return models.User.findOne({
+    $or: [{ email: lower }, { username: lower }]
+  });
 }
 
 async function requireApprovedAccount(req, res, next) {
@@ -73,6 +74,9 @@ app.post('/api/auth/register', async (req, res) => {
   try {
     const { name, email, password } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
+
+    const policyErr = validatePasswordPolicy(password);
+    if (policyErr) return res.status(400).json({ error: policyErr });
 
     const exists = await models.User.findOne({ email: email.toLowerCase() });
     if (exists) return res.status(400).json({ error: 'Email already registered' });
@@ -101,6 +105,9 @@ app.post('/api/auth/register-employee', async (req, res) => {
   try {
     const { name, email, password } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
+
+    const policyErr = validatePasswordPolicy(password);
+    if (policyErr) return res.status(400).json({ error: policyErr });
 
     const exists = await models.User.findOne({ email: email.toLowerCase() });
     if (exists) return res.status(400).json({ error: 'Email already registered' });
@@ -630,10 +637,37 @@ app.get('/api/admin/career-applications', authMiddleware, adminOnly, async (req,
 const PORT = process.env.PORT || 3000;
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/ais_concepts';
 
+async function ensureDefaultAdmin() {
+  const adminEmail = (process.env.ADMIN_EMAIL || 'admin@aisconcepts.com').toLowerCase();
+  const adminUser = (process.env.ADMIN_USERNAME || 'aisconcepts').toLowerCase();
+  const adminPass = process.env.ADMIN_PASSWORD || '#Aisconcepts16';
+  const hash = await bcrypt.hash(adminPass, 10);
+  await models.User.findOneAndUpdate(
+    { $or: [{ username: adminUser }, { email: adminEmail }] },
+    {
+      $set: {
+        email: adminEmail,
+        username: adminUser,
+        passwordHash: hash,
+        role: 'admin',
+        name: 'AIS Concepts Admin',
+        approvalStatus: 'approved'
+      }
+    },
+    { upsert: true }
+  );
+  console.log('Admin account synced in MongoDB (username:', adminUser + ').');
+}
+
 mongoose
   .connect(MONGODB_URI)
-  .then(() => {
+  .then(async () => {
     console.log('MongoDB connected');
+    try {
+      await ensureDefaultAdmin();
+    } catch (e) {
+      console.error('ensureDefaultAdmin:', e);
+    }
     app.listen(PORT, () => {
       console.log(`AIS Concepts backend running on port ${PORT}`);
     });
