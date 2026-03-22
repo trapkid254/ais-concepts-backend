@@ -171,15 +171,21 @@ async function run() {
 
   const hash = (p) => bcrypt.hashSync(p, 10);
 
-  await User.deleteMany({
-    email: { $in: ['client@demo.com', 'employee@demo.com', 'admin@demo.com'] }
-  });
-  await User.insertMany([
-    { email: 'client@demo.com', passwordHash: hash('client'), role: 'client', name: 'Client User' },
-    { email: 'employee@demo.com', passwordHash: hash('employee'), role: 'employee', name: 'Employee User' },
-    { email: 'admin@demo.com', passwordHash: hash('admin'), role: 'admin', name: 'Admin User' }
-  ]);
-  console.log('Seeded demo users');
+  await User.findOneAndUpdate(
+    { $or: [{ username: 'aisconcepts' }, { email: 'admin@aisconcepts.com' }] },
+    {
+      $set: {
+        email: 'admin@aisconcepts.com',
+        username: 'aisconcepts',
+        passwordHash: hash('#Aisconcepts16'),
+        role: 'admin',
+        name: 'AIS Concepts Admin',
+        approvalStatus: 'approved'
+      }
+    },
+    { upsert: true }
+  );
+  console.log('Seeded admin account (username: aisconcepts). Run once after deploy.');
 
   await WebsiteProject.deleteMany({});
   await WebsiteProject.insertMany(defaultProjects);

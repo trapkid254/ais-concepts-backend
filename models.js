@@ -2,13 +2,18 @@ const mongoose = require('mongoose');
 
 const userSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true, lowercase: true },
+  username: { type: String, sparse: true, unique: true, lowercase: true, trim: true },
   passwordHash: { type: String, required: true },
   role: { type: String, enum: ['client', 'employee', 'admin'], required: true },
+  approvalStatus: {
+    type: String,
+    enum: ['pending', 'approved']
+  },
   name: { type: String, default: '' },
   phone: { type: String, default: '' },
   avatar: { type: String, default: '' },
   lastLogin: { type: Date }
-});
+}, { timestamps: true });
 
 const websiteProjectSchema = new mongoose.Schema({
   slug: { type: String, unique: true, sparse: true },
