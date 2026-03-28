@@ -19,7 +19,7 @@ async function resetAllCredentials() {
     
     const newAdmin = await User.create({
       email: 'admin@aisconcepts.com',
-      username: 'Aisconcepts61',
+      username: 'aisconcepts',
       passwordHash: hash('#Aisconcepts16'),
       role: 'admin',
       name: 'AIS Concepts Administrator',
@@ -28,7 +28,7 @@ async function resetAllCredentials() {
     });
 
     console.log('✅ Successfully created new admin account:');
-    console.log('   Username: Aisconcepts61');
+    console.log('   Username: aisconcepts');
     console.log('   Email: admin@aisconcepts.com');
     console.log('   Password: #Aisconcepts16');
     console.log('   Role: admin');
@@ -36,7 +36,7 @@ async function resetAllCredentials() {
     console.log('   ID:', newAdmin._id);
 
     // Verify the admin was created
-    const verifyAdmin = await User.findOne({ username: 'Aisconcepts61' });
+    const verifyAdmin = await User.findOne({ username: 'aisconcepts' });
     if (verifyAdmin) {
       console.log('✅ Admin account verified in database');
     } else {

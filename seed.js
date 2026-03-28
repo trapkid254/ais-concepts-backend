@@ -171,19 +171,21 @@ async function run() {
 
   const hash = (p) => bcrypt.hashSync(p, 10);
 
-  // Clear existing admin accounts first
-  await User.deleteMany({ role: 'admin' });
-  
-  // Create new admin account with updated credentials
-  await User.create({
-    email: 'admin@aisconcepts.com',
-    username: 'Aisconcepts61',
-    passwordHash: hash('#Aisconcepts16'),
-    role: 'admin',
-    name: 'AIS Concepts Administrator',
-    approvalStatus: 'approved'
-  });
-  console.log('Created new admin account (username: Aisconcepts61, password: #Aisconcepts16).');
+  await User.findOneAndUpdate(
+    { $or: [{ username: 'aisconcepts' }, { email: 'admin@aisconcepts.com' }] },
+    {
+      $set: {
+        email: 'admin@aisconcepts.com',
+        username: 'aisconcepts',
+        passwordHash: hash('#Aisconcepts16'),
+        role: 'admin',
+        name: 'AIS Concepts Admin',
+        approvalStatus: 'approved'
+      }
+    },
+    { upsert: true }
+  );
+  console.log('Seeded admin account (username: aisconcepts). Run once after deploy.');
 
   await WebsiteProject.deleteMany({});
   await WebsiteProject.insertMany(defaultProjects);
