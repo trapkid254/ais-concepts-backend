@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "seed": "node seed.js"
+    "seed": "node seed.js",
+    "reset-credentials": "node reset-credentials.js"
   },
   "engines": {
     "node": ">=18"
