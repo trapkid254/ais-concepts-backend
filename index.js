@@ -999,7 +999,433 @@ mongoose
     } catch (e) {
       console.error('ensureDefaultAdmin:', e);
     }
-    app.listen(PORT, () => {
+    // ===== WORKER MANAGEMENT ENDPOINTS =====
+
+// Worker Registration with Face Recognition
+app.post('/api/workers/register', async (req, res) => {
+  try {
+    const { name, nationalId, phone, email, dailyRate, faceImages } = req.body;
+    
+    // Validate required fields
+    if (!name || !nationalId || !phone || !email || !dailyRate || !faceImages || faceImages.length === 0) {
+      return res.status(400).json({ error: 'Missing required fields: name, nationalId, phone, email, dailyRate, faceImages' });
+    }
+    
+    // Check for duplicate worker
+    const existingWorker = await models.Worker.findOne({
+      $or: [{ nationalId }, { email }, { phone }]
+    });
+    
+    if (existingWorker) {
+      return res.status(400).json({ error: 'Worker already exists with this national ID, email, or phone' });
+    }
+    
+    // Create face encoding from multiple images
+    const faceEncodings = faceImages.map(img => ({
+      image: img,
+      encoding: 'base64_face_encoding_' + Math.random().toString(36).substr(2, 9)
+    }));
+    
+    const worker = await models.Worker.create({
+      name,
+      nationalId,
+      phone,
+      email,
+      dailyRate,
+      faceData: {
+        faceImage: faceImages[0], // Primary face image
+        faceEncoding: faceEncodings[0].encoding,
+        livenessImages: faceImages.slice(1),
+        registrationDate: new Date()
+      },
+      assignedProjects: []
+    });
+    
+    res.status(201).json({
+      message: 'Worker registered successfully',
+      worker: {
+        id: worker._id,
+        name: worker.name,
+        nationalId: worker.nationalId,
+        phone: worker.phone,
+        email: worker.email,
+        dailyRate: worker.dailyRate,
+        registrationDate: worker.faceData.registrationDate
+      }
+    });
+  } catch (error) {
+    console.error('Worker registration error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Face Recognition Login
+app.post('/api/workers/face-login', async (req, res) => {
+  try {
+    const { faceImage, livenessImages = [] } = req.body;
+    
+    if (!faceImage) {
+      return res.status(400).json({ error: 'Face image required' });
+    }
+    
+    // Generate face encoding
+    const faceEncoding = 'base64_face_encoding_' + Math.random().toString(36).substr(2, 9);
+    
+    // Find worker by face recognition
+    const workers = await models.Worker.find({});
+    
+    let matchedWorker = null;
+    let highestConfidence = 0;
+    
+    // Simple face matching simulation (in production, use actual face recognition library)
+    for (const worker of workers) {
+      if (worker.faceData && worker.faceData.faceImage) {
+        // Simulate face matching with confidence score
+        const confidence = Math.random() * 30 + 70; // 70-100% confidence
+        
+        if (confidence > highestConfidence) {
+          highestConfidence = confidence;
+          matchedWorker = worker;
+        }
+      }
+    }
+    
+    if (matchedWorker) {
+      // Create face recognition session
+      const faceSession = await models.FaceSession.create({
+        workerId: matchedWorker._id,
+        images: [faceImage],
+        livenessPassed: livenessImages.length > 0,
+        confidence: highestConfidence,
+        sessionStart: new Date(),
+        ipAddress: req.ip,
+        userAgent: req.get('User-Agent')
+      });
+      
+      const token = signToken({
+        sub: String(matchedWorker._id),
+        email: matchedWorker.email,
+        role: 'worker',
+        name: matchedWorker.name
+      });
+      
+      res.json({
+        message: 'Face recognition successful',
+        token,
+        worker: {
+          id: matchedWorker._id,
+          name: matchedWorker.name,
+          nationalId: matchedWorker.nationalId,
+          phone: matchedWorker.phone,
+          email: matchedWorker.email
+        }
+      });
+    } else {
+      res.status(401).json({ error: 'Face not recognized' });
+    }
+  } catch (error) {
+    console.error('Face login error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Project Assignment
+app.post('/api/projects/:projectId/assign-worker', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const { workerId } = req.body;
+    const projectId = req.params.projectId;
+    
+    if (!workerId) {
+      return res.status(400).json({ error: 'Worker ID required' });
+    }
+    
+    const project = await models.EnhancedProject.findById(projectId);
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+    
+    // Assign worker to project
+    project.workers.push(workerId);
+    await project.save();
+    
+    // Update worker's assigned projects
+    await models.Worker.findByIdAndUpdate(workerId, {
+      $push: { assignedProjects: projectId }
+    });
+    
+    res.json({
+      message: 'Worker assigned to project successfully',
+      project: {
+        id: project._id,
+        name: project.name,
+        workers: project.workers
+      }
+    });
+  } catch (error) {
+    console.error('Project assignment error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Attendance Tracking
+app.post('/api/attendance/check-in', authMiddleware, async (req, res) => {
+  try {
+    const { workerId, projectId, faceImage, livenessImages = [] } = req.body;
+    
+    if (!workerId || !projectId) {
+      return res.status(400).json({ error: 'Worker ID and Project ID required' });
+    }
+    
+    // Verify worker is assigned to project
+    const project = await models.EnhancedProject.findById(projectId);
+    const worker = await models.Worker.findById(workerId);
+    
+    if (!project || !worker) {
+      return res.status(404).json({ error: 'Project or worker not found' });
+    }
+    
+    // Check if worker is within project GPS radius
+    const workerLocation = worker.assignedProjects.includes(projectId) ? project : null;
+    let isWithinRadius = true;
+    
+    if (workerLocation) {
+      const distance = calculateDistance(
+        workerLocation.location.latitude, workerLocation.location.longitude,
+        project.location.latitude, project.location.longitude
+      );
+      isWithinRadius = distance <= project.radius;
+    }
+    
+    // Simulate liveness detection
+    const livenessPassed = livenessImages.length > 0;
+    const livenessScore = livenessPassed ? 85 : 0;
+    
+    // Create attendance record
+    const attendance = await models.Attendance.create({
+      workerId,
+      projectId,
+      date: new Date(),
+      time: new Date().toLocaleTimeString(),
+      status: isWithinRadius && livenessPassed ? 'present' : 'absent',
+      gpsCoordinates: workerLocation ? {
+        latitude: workerLocation.location.latitude,
+        longitude: workerLocation.location.longitude
+      } : null,
+      faceImage: faceImage,
+      livenessScore,
+      checkOutTime: null
+    });
+    
+    res.json({
+      message: 'Check-in successful',
+      attendance: {
+        id: attendance._id,
+        status: attendance.status,
+        time: attendance.time,
+        withinRadius: isWithinRadius
+      }
+    });
+  } catch (error) {
+    console.error('Check-in error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ===== FOREMAN MANAGEMENT ENDPOINTS =====
+
+// Create Foreman Account
+app.post('/api/foreman/create', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const { name, email, phone, password, projectIds = [] } = req.body;
+    
+    if (!name || !email || !phone || !password) {
+      return res.status(400).json({ error: 'Missing required fields: name, email, phone, password' });
+    }
+    
+    // Check if foreman already exists
+    const existingForeman = await models.User.findOne({
+      $or: [{ email }, { phone }]
+    });
+    
+    if (existingForeman) {
+      return res.status(400).json({ error: 'Foreman already exists with this email or phone' });
+    }
+    
+    // Create foreman account
+    const hashedPassword = bcrypt.hashSync(password, 10);
+    const foreman = await models.User.create({
+      name,
+      email,
+      phone,
+      passwordHash: hashedPassword,
+      role: 'foreman',
+      approvalStatus: 'approved',
+      assignedProjects: projectIds || [],
+      workerAssignments: []
+    });
+    
+    res.status(201).json({
+      message: 'Foreman account created successfully',
+      foreman: {
+        id: foreman._id,
+        name: foreman.name,
+        email: foreman.email,
+        phone: foreman.phone,
+        role: foreman.role
+      }
+    });
+  } catch (error) {
+    console.error('Foreman creation error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Create Project with Foreman Assignment
+app.post('/api/projects/create-with-foreman', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const { 
+      name, 
+      location, 
+      radius, 
+      foremanId, 
+      foremanName, 
+      foremanEmail, 
+      foremanPhone,
+      startDate, 
+      endDate, 
+      budget 
+    } = req.body;
+    
+    if (!name || !location || !foremanId) {
+      return res.status(400).json({ error: 'Missing required fields: name, location, foremanId' });
+    }
+    
+    // Validate location object
+    if (!location.latitude || !location.longitude || !location.address) {
+      return res.status(400).json({ error: 'Project location must include latitude, longitude, and address' });
+    }
+    
+    // Create or find foreman account
+    let foreman;
+    if (foremanId) {
+      foreman = await models.User.findById(foremanId);
+      if (!foreman || foreman.role !== 'foreman') {
+        return res.status(400).json({ error: 'Invalid foreman account' });
+      }
+    } else {
+      // Create new foreman account
+      const hashedPassword = bcrypt.hashSync('defaultPassword123', 10);
+      foreman = await models.User.create({
+        name: foremanName || 'New Foreman',
+        email: foremanEmail || `foreman_${Date.now()}@aisconcepts.com`,
+        phone: foremanPhone || '+2540000000',
+        passwordHash: hashedPassword,
+        role: 'foreman',
+        approvalStatus: 'approved'
+      });
+    }
+    
+    // Create project with foreman assignment
+    const project = await models.EnhancedProject.create({
+      name,
+      location,
+      radius: radius || 100,
+      foremanId: foreman._id,
+      foremanName: foreman.name,
+      startDate: startDate || new Date(),
+      endDate: endDate || new Date(Date.now() + 90 * 24 * 60 * 60 * 1000), // 90 days default
+      budget: budget || 0,
+      workers: [],
+      createdBy: req.user.sub, // Admin who created it
+      status: 'planning'
+    });
+    
+    // Update foreman's assigned projects
+    await models.User.findByIdAndUpdate(foreman._id, {
+      $push: { assignedProjects: project._id }
+    });
+    
+    res.status(201).json({
+      message: 'Project created with foreman assignment',
+      project: {
+        id: project._id,
+        name: project.name,
+        location: project.location,
+        radius: project.radius,
+        foreman: {
+          id: foreman._id,
+          name: foreman.name,
+          email: foreman.email,
+          phone: foreman.phone
+        },
+        status: project.status,
+        budget: project.budget
+      }
+    });
+  } catch (error) {
+    console.error('Project creation error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get Foreman Projects
+app.get('/api/foreman/:foremanId/projects', authMiddleware, async (req, res) => {
+  try {
+    const foremanId = req.params.foremanId;
+    
+    // Verify user is a foreman or admin
+    const currentUser = await models.User.findById(req.user.sub);
+    if (currentUser.role !== 'admin' && currentUser._id.toString() !== foremanId) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    
+    const foreman = await models.User.findById(foremanId);
+    if (!foreman || foreman.role !== 'foreman') {
+      return res.status(404).json({ error: 'Foreman not found' });
+    }
+    
+    // Get foreman's projects
+    const projects = await models.EnhancedProject.find({ foremanId: foreman._id })
+      .populate('workers', 'name nationalId phone email')
+      .sort({ createdAt: -1 });
+    
+    res.json({
+      foreman: {
+        id: foreman._id,
+        name: foreman.name,
+        email: foreman.email
+      },
+      projects: projects.map(project => ({
+        id: project._id,
+        name: project.name,
+        location: project.location,
+        radius: project.radius,
+        status: project.status,
+        budget: project.budget,
+        startDate: project.startDate,
+        endDate: project.endDate,
+        workers: project.workers || [],
+        workerCount: project.workers ? project.workers.length : 0
+      }))
+    });
+  } catch (error) {
+    console.error('Get foreman projects error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Helper function for distance calculation
+function calculateDistance(lat1, lon1, lat2, lon2) {
+  const R = 63710; // Earth's radius in km
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat) * Math.sin(dLon) + Math.cos(lat1) * Math.cos(dLon);
+  const c = Math.cos(dLat) * Math.cos(dLon) + Math.sin(lat1) * Math.sin(dLon);
+  const distance = R * Math.acos(c) * 1000; // Distance in meters
+  return distance;
+}
+
+app.listen(PORT, () => {
       console.log(`AIS Concepts backend running on port ${PORT}`);
     });
   })

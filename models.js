@@ -4,7 +4,7 @@ const userSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true, lowercase: true },
   username: { type: String, sparse: true, unique: true, lowercase: true, trim: true },
   passwordHash: { type: String, required: true },
-  role: { type: String, enum: ['client', 'employee', 'admin'], required: true },
+  role: { type: String, enum: ['client', 'employee', 'foreman', 'admin'], required: true },
   approvalStatus: {
     type: String,
     enum: ['pending', 'approved']
@@ -12,7 +12,10 @@ const userSchema = new mongoose.Schema({
   name: { type: String, default: '' },
   phone: { type: String, default: '' },
   avatar: { type: String, default: '' },
-  lastLogin: { type: Date }
+  lastLogin: { type: Date },
+  // Foreman specific fields
+  assignedProjects: [{ type: mongoose.Schema.Types.ObjectId, ref: 'EnhancedProject' }],
+  workerAssignments: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Worker' }]
 }, { timestamps: true });
 
 const websiteProjectSchema = new mongoose.Schema({
@@ -52,6 +55,100 @@ const blogPostSchema = new mongoose.Schema({
   image: { type: String, default: '' },
   sortOrder: { type: Number, default: 0 }
 });
+
+// Worker Management Schemas
+const workerSchema = new mongoose.Schema({
+  nationalId: { type: String, required: true, unique: true },
+  name: { type: String, required: true },
+  phone: { type: String, required: true },
+  email: { type: String, lowercase: true, unique: true },
+  dailyRate: { type: Number, required: true },
+  faceData: {
+    faceImage: { type: String, required: true },
+    faceEncoding: { type: String, required: true },
+    livenessImages: [{ type: String }],
+    registrationDate: { type: Date, default: Date.now }
+  },
+  assignedProjects: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Project' }],
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+}, { timestamps: true });
+
+// Enhanced Project Schema with GPS and Foreman
+const enhancedProjectSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  location: {
+    latitude: { type: Number, required: true },
+    longitude: { type: Number, required: true },
+    address: { type: String, required: true }
+  },
+  radius: { type: Number, default: 100 }, // meters
+  foremanId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // Changed to User model for foreman accounts
+  foremanName: { type: String, default: '' }, // Store foreman name for display
+  startDate: { type: Date, required: true },
+  endDate: { type: Date, required: true },
+  status: { 
+    type: String, 
+    enum: ['planning', 'active', 'completed', 'on-hold'], 
+    default: 'planning' 
+  },
+  budget: { type: Number, required: true },
+  workers: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Worker' }],
+  // Project creation workflow tracking
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+}, { timestamps: true });
+
+// Attendance Schema with GPS and Face Recognition
+const attendanceSchema = new mongoose.Schema({
+  workerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Worker', required: true },
+  projectId: { type: mongoose.Schema.Types.ObjectId, ref: 'Project', required: true },
+  date: { type: Date, required: true },
+  time: { type: String, required: true }, // Check-in time
+  status: { 
+    type: String, 
+    enum: ['present', 'absent', 'late'], 
+    required: true 
+  },
+  gpsCoordinates: {
+    latitude: { type: Number },
+    longitude: { type: Number }
+  },
+  faceImage: { type: String }, // Proof of presence
+  livenessScore: { type: Number }, // Anti-spoofing score
+  checkOutTime: { type: Date }
+}, { timestamps: true });
+
+// Payroll Schema
+const payrollSchema = new mongoose.Schema({
+  workerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Worker', required: true },
+  projectId: { type: mongoose.Schema.Types.ObjectId, ref: 'Project', required: true },
+  payPeriod: {
+    startDate: { type: Date, required: true },
+    endDate: { type: Date, required: true }
+  },
+  daysPresent: { type: Number, required: true },
+  daysAbsent: { type: Number, required: true },
+  daysLate: { type: Number, required: true },
+  hourlyRate: { type: Number, required: true },
+  overtimeHours: { type: Number, default: 0 },
+  totalSalary: { type: Number, required: true },
+  deductions: { type: Number, default: 0 },
+  createdAt: { type: Date, default: Date.now }
+}, { timestamps: true });
+
+// Face Recognition Session Schema
+const faceSessionSchema = new mongoose.Schema({
+  workerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Worker', required: true },
+  images: [{ type: String }], // Multiple face angles
+  livenessPassed: { type: Boolean, required: true },
+  confidence: { type: Number, required: true },
+  sessionStart: { type: Date, required: true },
+  sessionEnd: { type: Date },
+  ipAddress: { type: String },
+  userAgent: { type: String }
+}, { timestamps: true });
 
 const newsletterSubscriberSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true, lowercase: true },
@@ -135,5 +232,11 @@ module.exports = {
   CareerApplication: mongoose.model('CareerApplication', careerApplicationSchema),
   PortalState: mongoose.model('PortalState', portalStateSchema),
   UserProfile: mongoose.model('UserProfile', userProfileSchema),
-  SiteContent: mongoose.model('SiteContent', siteContentSchema)
+  SiteContent: mongoose.model('SiteContent', siteContentSchema),
+  // Worker Management Models
+  Worker: mongoose.model('Worker', workerSchema),
+  EnhancedProject: mongoose.model('EnhancedProject', enhancedProjectSchema),
+  Attendance: mongoose.model('Attendance', attendanceSchema),
+  Payroll: mongoose.model('Payroll', payrollSchema),
+  FaceSession: mongoose.model('FaceSession', faceSessionSchema)
 };
