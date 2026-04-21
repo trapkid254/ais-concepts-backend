@@ -97,6 +97,21 @@ async function requireApprovedAccount(req, res, next) {
   }
 }
 
+/* ——— User Management ——— */
+app.get('/api/users', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const { role } = req.query;
+    const filter = role ? { role } : {};
+    const users = await models.User.find(filter)
+      .select('-passwordHash')
+      .sort({ createdAt: -1 });
+    res.json(users);
+  } catch (error) {
+    console.error('Error fetching users:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 /* ——— Auth ——— */
 app.post('/api/auth/register', async (req, res) => {
   try {
