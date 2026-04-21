@@ -535,7 +535,8 @@ const PORTAL_KEYS = [
   'employeeProgress',
   'employeeAssignmentStatus',
   'adminSettings',
-  'adminClientProgressUpdates'
+  'adminClientProgressUpdates',
+  'faqs'
 ];
 
 app.get('/api/notifications', authMiddleware, requireApprovedAccount, async (req, res) => {
