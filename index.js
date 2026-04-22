@@ -1430,6 +1430,163 @@ app.get('/api/foreman/:foremanId/projects', authMiddleware, async (req, res) => 
   }
 });
 
+/* -- FAQ Management -- */
+app.get('/api/faqs', async (req, res) => {
+  try {
+    const faqs = await models.FAQ.find({ isActive: true }).sort({ sortOrder: 1, createdAt: 1 }).lean();
+    
+    // Group FAQs by category
+    const groupedFAQs = {
+      general: [],
+      services: [],
+      process: []
+    };
+    
+    faqs.forEach(faq => {
+      if (groupedFAQs[faq.category]) {
+        groupedFAQs[faq.category].push({
+          id: faq._id,
+          question: faq.question,
+          answer: faq.answer,
+          date: faq.createdAt,
+          sortOrder: faq.sortOrder
+        });
+      }
+    });
+    
+    res.json(groupedFAQs);
+  } catch (error) {
+    console.error('Error fetching FAQs:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.get('/api/faqs/:category/:id', async (req, res) => {
+  try {
+    const { category, id } = req.params;
+    const faq = await models.FAQ.findOne({ _id: id, category, isActive: true }).lean();
+    
+    if (!faq) {
+      return res.status(404).json({ error: 'FAQ not found' });
+    }
+    
+    res.json({
+      id: faq._id,
+      question: faq.question,
+      answer: faq.answer,
+      category: faq.category,
+      sortOrder: faq.sortOrder,
+      date: faq.createdAt
+    });
+  } catch (error) {
+    console.error('Error fetching FAQ:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/api/faqs', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const { category, question, answer } = req.body;
+    
+    if (!category || !question || !answer) {
+      return res.status(400).json({ error: 'Category, question, and answer are required' });
+    }
+    
+    if (!['general', 'services', 'process'].includes(category)) {
+      return res.status(400).json({ error: 'Invalid category' });
+    }
+    
+    // Get the highest sort order for this category and add 1
+    const maxSort = await models.FAQ.findOne({ category }).sort({ sortOrder: -1 }).lean();
+    const sortOrder = maxSort ? maxSort.sortOrder + 1 : 0;
+    
+    const faq = await models.FAQ.create({
+      category,
+      question,
+      answer,
+      sortOrder,
+      createdBy: req.user.sub
+    });
+    
+    res.status(201).json({
+      id: faq._id,
+      question: faq.question,
+      answer: faq.answer,
+      category: faq.category,
+      sortOrder: faq.sortOrder,
+      date: faq.createdAt
+    });
+  } catch (error) {
+    console.error('Error creating FAQ:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.put('/api/faqs/:category/:id', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const { category, id } = req.params;
+    const { question, answer, sortOrder } = req.body;
+    
+    if (!question || !answer) {
+      return res.status(400).json({ error: 'Question and answer are required' });
+    }
+    
+    const faq = await models.FAQ.findOne({ _id: id, category });
+    
+    if (!faq) {
+      return res.status(404).json({ error: 'FAQ not found' });
+    }
+    
+    const updateData = {
+      question,
+      answer,
+      updatedAt: new Date()
+    };
+    
+    if (sortOrder !== undefined) {
+      updateData.sortOrder = sortOrder;
+    }
+    
+    const updatedFAQ = await models.FAQ.findByIdAndUpdate(
+      id,
+      updateData,
+      { new: true }
+    ).lean();
+    
+    res.json({
+      id: updatedFAQ._id,
+      question: updatedFAQ.question,
+      answer: updatedFAQ.answer,
+      category: updatedFAQ.category,
+      sortOrder: updatedFAQ.sortOrder,
+      date: updatedFAQ.createdAt
+    });
+  } catch (error) {
+    console.error('Error updating FAQ:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.delete('/api/faqs/:category/:id', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const { category, id } = req.params;
+    
+    const faq = await models.FAQ.findOne({ _id: id, category });
+    
+    if (!faq) {
+      return res.status(404).json({ error: 'FAQ not found' });
+    }
+    
+    // Soft delete by setting isActive to false
+    await models.FAQ.findByIdAndUpdate(id, { isActive: false });
+    
+    res.json({ message: 'FAQ deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting FAQ:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Helper function for distance calculation
 function calculateDistance(lat1, lon1, lat2, lon2) {
   const R = 63710; // Earth's radius in km

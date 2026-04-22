@@ -221,6 +221,21 @@ const siteContentSchema = new mongoose.Schema({
   partners: { type: [mongoose.Schema.Types.Mixed], default: [] }
 });
 
+const faqSchema = new mongoose.Schema({
+  category: { 
+    type: String, 
+    enum: ['general', 'services', 'process'], 
+    required: true 
+  },
+  question: { type: String, required: true },
+  answer: { type: String, required: true },
+  sortOrder: { type: Number, default: 0 },
+  isActive: { type: Boolean, default: true },
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+}, { timestamps: true });
+
 module.exports = {
   User: mongoose.model('User', userSchema),
   WebsiteProject: mongoose.model('WebsiteProject', websiteProjectSchema),
@@ -233,6 +248,7 @@ module.exports = {
   PortalState: mongoose.model('PortalState', portalStateSchema),
   UserProfile: mongoose.model('UserProfile', userProfileSchema),
   SiteContent: mongoose.model('SiteContent', siteContentSchema),
+  FAQ: mongoose.model('FAQ', faqSchema),
   // Worker Management Models
   Worker: mongoose.model('Worker', workerSchema),
   EnhancedProject: mongoose.model('EnhancedProject', enhancedProjectSchema),
