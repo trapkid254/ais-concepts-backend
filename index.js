@@ -1326,10 +1326,14 @@ app.get('/api/projects', authMiddleware, async (req, res) => {
 app.delete('/api/projects/:projectId', authMiddleware, adminOnly, async (req, res) => {
   try {
     const projectId = req.params.projectId;
+    console.log('Delete request received for projectId:', projectId);
+    console.log('Type of projectId:', typeof projectId);
     
     // Find and delete the project
     const project = await models.EnhancedProject.findById(projectId);
+    console.log('Found project:', project);
     if (!project) {
+      console.log('Project not found for ID:', projectId);
       return res.status(404).json({ error: 'Project not found' });
     }
     
@@ -1568,6 +1572,49 @@ app.get('/api/invoices', authMiddleware, async (req, res) => {
     res.json(invoices);
   } catch (error) {
     console.error('Get invoices error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Create Project Inquiry
+app.post('/api/inquiries', authMiddleware, async (req, res) => {
+  try {
+    const inquiryData = {
+      projectId: req.body.projectId,
+      projectName: req.body.projectName,
+      clientEmail: req.body.clientEmail,
+      clientName: req.body.clientName,
+      subject: req.body.subject,
+      message: req.body.message,
+      priority: req.body.priority,
+      createdAt: new Date(),
+      status: 'pending'
+    };
+    
+    // Create a simple inquiry model (you can enhance this later)
+    const inquiry = new models.Inquiry(inquiryData);
+    await inquiry.save();
+    
+    // TODO: Send email notification to admin about new inquiry
+    
+    res.json({ success: true, message: 'Inquiry submitted successfully' });
+  } catch (error) {
+    console.error('Create inquiry error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get Inquiries (for admin)
+app.get('/api/inquiries', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    
+    const inquiries = await models.Inquiry.find().sort({ createdAt: -1 });
+    res.json(inquiries);
+  } catch (error) {
+    console.error('Get inquiries error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });

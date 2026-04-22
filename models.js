@@ -236,6 +236,19 @@ const faqSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now }
 }, { timestamps: true });
 
+const inquirySchema = new mongoose.Schema({
+  projectId: { type: String, required: true },
+  projectName: { type: String, required: true },
+  clientEmail: { type: String, required: true },
+  clientName: { type: String, required: true },
+  subject: { type: String, required: true },
+  message: { type: String, required: true },
+  priority: { type: String, enum: ['low', 'medium', 'high', 'urgent'], default: 'medium' },
+  status: { type: String, enum: ['pending', 'in-progress', 'resolved'], default: 'pending' },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+}, { timestamps: true });
+
 module.exports = {
   User: mongoose.model('User', userSchema),
   WebsiteProject: mongoose.model('WebsiteProject', websiteProjectSchema),
@@ -249,10 +262,10 @@ module.exports = {
   UserProfile: mongoose.model('UserProfile', userProfileSchema),
   SiteContent: mongoose.model('SiteContent', siteContentSchema),
   FAQ: mongoose.model('FAQ', faqSchema),
-  // Worker Management Models
   Worker: mongoose.model('Worker', workerSchema),
   EnhancedProject: mongoose.model('EnhancedProject', enhancedProjectSchema),
   Attendance: mongoose.model('Attendance', attendanceSchema),
   Payroll: mongoose.model('Payroll', payrollSchema),
-  FaceSession: mongoose.model('FaceSession', faceSessionSchema)
+  FaceSession: mongoose.model('FaceSession', faceSessionSchema),
+  Inquiry: mongoose.model('Inquiry', inquirySchema)
 };
