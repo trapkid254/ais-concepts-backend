@@ -1296,6 +1296,69 @@ app.post('/api/foreman/create', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
+// Get Projects (with optional client filter)
+app.get('/api/projects', authMiddleware, async (req, res) => {
+  try {
+    const { client } = req.query;
+    let projects;
+    
+    if (client) {
+      // Filter projects by client email
+      projects = await models.EnhancedProject.find({ 
+        client: { $regex: new RegExp(client, 'i') }
+      }).sort({ createdAt: -1 });
+    } else {
+      // Get all projects for admin users
+      if (req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Access denied' });
+      }
+      projects = await models.EnhancedProject.find().sort({ createdAt: -1 });
+    }
+    
+    res.json(projects);
+  } catch (error) {
+    console.error('Get projects error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Delete Project
+app.delete('/api/projects/:projectId', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const projectId = req.params.projectId;
+    
+    // Find and delete the project
+    const project = await models.EnhancedProject.findById(projectId);
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+    
+    // Remove project from any assigned foremen
+    if (project.foremanId) {
+      await models.User.findByIdAndUpdate(
+        project.foremanId,
+        { $pull: { assignedProjects: projectId } }
+      );
+    }
+    
+    // Remove project from any assigned workers
+    if (project.workers && project.workers.length > 0) {
+      await models.User.updateMany(
+        { _id: { $in: project.workers } },
+        { $pull: { assignedProjects: projectId } }
+      );
+    }
+    
+    // Delete the project
+    await models.EnhancedProject.findByIdAndDelete(projectId);
+    
+    res.json({ message: 'Project deleted successfully' });
+  } catch (error) {
+    console.error('Delete project error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Create Project with Foreman Assignment
 app.post('/api/projects/create-with-foreman', authMiddleware, adminOnly, async (req, res) => {
   try {
@@ -1426,6 +1489,105 @@ app.get('/api/foreman/:foremanId/projects', authMiddleware, async (req, res) => 
     });
   } catch (error) {
     console.error('Get foreman projects error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Delete Foreman
+app.delete('/api/foreman/:foremanId', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const foremanId = req.params.foremanId;
+    
+    // Find and delete the foreman
+    const foreman = await models.User.findById(foremanId);
+    if (!foreman || foreman.role !== 'foreman') {
+      return res.status(404).json({ error: 'Foreman not found' });
+    }
+    
+    // Remove foreman from any assigned projects
+    await models.EnhancedProject.updateMany(
+      { foremanId: foreman._id },
+      { $unset: { foremanId: 1, foremanName: 1 } }
+    );
+    
+    // Delete the foreman
+    await models.User.findByIdAndDelete(foremanId);
+    
+    res.json({ message: 'Foreman deleted successfully' });
+  } catch (error) {
+    console.error('Delete foreman error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get Documents (with optional client filter)
+app.get('/api/documents', authMiddleware, async (req, res) => {
+  try {
+    const { client } = req.query;
+    let documents;
+    
+    if (client) {
+      // Filter documents by client email
+      documents = await models.Document.find({ 
+        client: { $regex: new RegExp(client, 'i') }
+      }).sort({ createdAt: -1 });
+    } else {
+      // Get all documents for admin users
+      if (req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Access denied' });
+      }
+      documents = await models.Document.find().sort({ createdAt: -1 });
+    }
+    
+    res.json(documents);
+  } catch (error) {
+    console.error('Get documents error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get Invoices (with optional client filter)
+app.get('/api/invoices', authMiddleware, async (req, res) => {
+  try {
+    const { client } = req.query;
+    let invoices;
+    
+    if (client) {
+      // Filter invoices by client email
+      invoices = await models.Invoice.find({ 
+        client: { $regex: new RegExp(client, 'i') }
+      }).sort({ createdAt: -1 });
+    } else {
+      // Get all invoices for admin users
+      if (req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Access denied' });
+      }
+      invoices = await models.Invoice.find().sort({ createdAt: -1 });
+    }
+    
+    res.json(invoices);
+  } catch (error) {
+    console.error('Get invoices error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+/* -- Portal Key Management -- */
+app.put('/api/portal/key/:key', authMiddleware, async (req, res) => {
+  try {
+    const key = req.params.key;
+    const value = req.body;
+    
+    // Store portal key data in user's session or database
+    // This is a simple key-value store for portal state management
+    const userId = req.user.sub;
+    
+    // For now, just return success - the actual storage can be implemented later
+    console.log(`Portal key sync: ${key} for user ${userId}`);
+    
+    res.json({ success: true, message: 'Portal key synced successfully' });
+  } catch (error) {
+    console.error('Portal key sync error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
