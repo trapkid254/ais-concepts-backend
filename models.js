@@ -51,6 +51,7 @@ const websiteServiceSchema = new mongoose.Schema({
 const blogPostSchema = new mongoose.Schema({
   title: { type: String, required: true },
   date: { type: String, default: '' },
+  author: { type: String, default: '' },
   excerpt: { type: String, default: '' },
   image: { type: String, default: '' },
   sortOrder: { type: Number, default: 0 }
