@@ -72,6 +72,26 @@ async function seedFAQs() {
         question: 'What is your design process?',
         answer: 'Our process includes: 1) Initial consultation and requirements gathering, 2) Concept development, 3) Design refinement, 4) Technical documentation, 5) Permit acquisition, 6) Construction supervision.',
         sortOrder: 3
+      },
+
+      // Style FAQs
+      {
+        category: 'style',
+        question: 'What is your architectural style?',
+        answer: 'Our architectural style is a blend of modern contemporary design with sustainable principles. We create spaces that are functional, aesthetically pleasing, and environmentally responsible.',
+        sortOrder: 1
+      },
+      {
+        category: 'style',
+        question: 'Do you follow a specific design philosophy?',
+        answer: 'Yes, we believe in designing with purpose. Our philosophy centers on creating spaces that enhance human experience while respecting the environment and local context.',
+        sortOrder: 2
+      },
+      {
+        category: 'style',
+        question: 'How do you incorporate sustainability into your designs?',
+        answer: 'Sustainability is at the core of our design approach. We use energy-efficient materials, passive design strategies, renewable energy integration, and locally sourced materials to minimize environmental impact.',
+        sortOrder: 3
       }
     ];
 

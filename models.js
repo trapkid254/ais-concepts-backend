@@ -224,7 +224,7 @@ const siteContentSchema = new mongoose.Schema({
 const faqSchema = new mongoose.Schema({
   category: { 
     type: String, 
-    enum: ['general', 'services', 'process'], 
+    enum: ['general', 'services', 'process', 'style'], 
     required: true 
   },
   question: { type: String, required: true },
