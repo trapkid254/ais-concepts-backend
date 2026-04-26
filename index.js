@@ -433,6 +433,7 @@ app.get('/api/blog', async (req, res) => {
         id: b._id || i + 1,
         title: b.title,
         date: b.date,
+        author: b.author || '',
         excerpt: b.excerpt,
         image: b.image
       }))
@@ -917,6 +918,7 @@ app.put('/api/admin/blog', authMiddleware, adminOnly, async (req, res) => {
     await models.BlogPost.create({
       title: b.title,
       date: b.date || '',
+      author: b.author || '',
       excerpt: b.excerpt || '',
       image: b.image || '',
       sortOrder: i
