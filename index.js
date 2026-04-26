@@ -1648,7 +1648,8 @@ app.get('/api/faqs', async (req, res) => {
     const groupedFAQs = {
       general: [],
       services: [],
-      process: []
+      process: [],
+      style: []
     };
     
     faqs.forEach(faq => {
@@ -1701,7 +1702,7 @@ app.post('/api/faqs', authMiddleware, adminOnly, async (req, res) => {
       return res.status(400).json({ error: 'Category, question, and answer are required' });
     }
     
-    if (!['general', 'services', 'process'].includes(category)) {
+    if (!['general', 'services', 'process', 'style'].includes(category)) {
       return res.status(400).json({ error: 'Invalid category' });
     }
     
