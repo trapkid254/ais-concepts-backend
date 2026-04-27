@@ -939,6 +939,53 @@ app.put('/api/admin/site/home', authMiddleware, adminOnly, async (req, res) => {
   res.json({ ok: true });
 });
 
+// Site Statistics Endpoints
+app.get('/api/statistics', async (req, res) => {
+  try {
+    const doc = await models.SiteStatistics.findOne({ key: 'main' }).lean();
+    if (!doc) {
+      // Return default values if no document exists
+      return res.json({
+        projectsDone: 150,
+        happyClients: 80,
+        yearsExperience: 15,
+        teamMembers: 25
+      });
+    }
+    res.json({
+      projectsDone: doc.projectsDone,
+      happyClients: doc.happyClients,
+      yearsExperience: doc.yearsExperience,
+      teamMembers: doc.teamMembers
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.put('/api/admin/statistics', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const { projectsDone, happyClients, yearsExperience, teamMembers } = req.body;
+    
+    await models.SiteStatistics.findOneAndUpdate(
+      { key: 'main' },
+      {
+        projectsDone: projectsDone || 150,
+        happyClients: happyClients || 80,
+        yearsExperience: yearsExperience || 15,
+        teamMembers: teamMembers || 25,
+        updatedAt: new Date()
+      },
+      { upsert: true }
+    );
+    res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 app.get('/api/admin/enquiries', authMiddleware, adminOnly, async (req, res) => {
   try {
     const list = await models.ProjectEnquiry.find().sort({ createdAt: -1 }).lean();

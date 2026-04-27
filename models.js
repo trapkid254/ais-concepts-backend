@@ -250,6 +250,15 @@ const inquirySchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now }
 }, { timestamps: true });
 
+const siteStatisticsSchema = new mongoose.Schema({
+  key: { type: String, unique: true, default: 'main' },
+  projectsDone: { type: Number, default: 150 },
+  happyClients: { type: Number, default: 80 },
+  yearsExperience: { type: Number, default: 15 },
+  teamMembers: { type: Number, default: 25 },
+  updatedAt: { type: Date, default: Date.now }
+}, { timestamps: true });
+
 module.exports = {
   User: mongoose.model('User', userSchema),
   WebsiteProject: mongoose.model('WebsiteProject', websiteProjectSchema),
@@ -268,5 +277,6 @@ module.exports = {
   Attendance: mongoose.model('Attendance', attendanceSchema),
   Payroll: mongoose.model('Payroll', payrollSchema),
   FaceSession: mongoose.model('FaceSession', faceSessionSchema),
-  Inquiry: mongoose.model('Inquiry', inquirySchema)
+  Inquiry: mongoose.model('Inquiry', inquirySchema),
+  SiteStatistics: mongoose.model('SiteStatistics', siteStatisticsSchema)
 };
