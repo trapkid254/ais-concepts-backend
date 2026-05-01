@@ -8,6 +8,7 @@ const cors = require('cors');
 const fs = require('fs');
 const multer = require('multer');
 const crypto = require('crypto');
+const cookieParser = require('cookie-parser');
 
 const { signToken, authMiddleware } = require('./auth');
 const models = require('./models');
