@@ -155,7 +155,7 @@ app.post('/api/auth/register', async (req, res) => {
 
 app.post('/api/auth/register-employee', async (req, res) => {
   try {
-    const { name, email, password } = req.body;
+    const { name, email, password, role, assignedProjects, phone, username } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
 
     const policyErr = validatePasswordPolicy(password);
@@ -168,9 +168,12 @@ app.post('/api/auth/register-employee', async (req, res) => {
     await models.User.create({
       email: email.toLowerCase(),
       passwordHash,
-      role: 'employee',
+      role: role || 'employee',
       name: name || email.split('@')[0],
-      approvalStatus: 'pending'
+      approvalStatus: 'pending',
+      username: username || email.split('@')[0],
+      phone: phone || '',
+      assignedProjects: assignedProjects || []
     });
 
     res.json({
@@ -1367,6 +1370,21 @@ app.get('/api/projects', authMiddleware, async (req, res) => {
     res.json(projects);
   } catch (error) {
     console.error('Get projects error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get Individual Project (for admin)
+app.get('/api/projects/:projectId', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const projectId = req.params.projectId;
+    const project = await models.EnhancedProject.findById(projectId);
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+    res.json(project);
+  } catch (error) {
+    console.error('Get project error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
