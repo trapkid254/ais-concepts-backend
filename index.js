@@ -1,10 +1,11 @@
 require('dotenv').config();
 const path = require('path');
 const express = require('express');
-const cors = require('cors');
-const cookieParser = require('cookie-parser');
-const bcrypt = require('bcryptjs');
 const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const cors = require('cors');
+const fs = require('fs');
 const multer = require('multer');
 const crypto = require('crypto');
 
@@ -1429,6 +1430,427 @@ app.delete('/api/projects/:projectId', authMiddleware, adminOnly, async (req, re
     res.status(500).json({ error: 'Server error' });
   }
 });
+
+// Create Project
+app.post('/api/projects', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const { 
+      name, 
+      client, 
+      location, 
+      budget, 
+      deadline, 
+      assignedForeman, 
+      progress, 
+      status, 
+      category, 
+      moneyPaid, 
+      moneyUsed, 
+      moneyRemaining, 
+      moneyOwed 
+    } = req.body;
+    
+    if (!name || !client) {
+      return res.status(400).json({ error: 'Missing required fields: name, client' });
+    }
+    
+    const project = await models.EnhancedProject.create({
+      name,
+      client,
+      location: location || { name: '', latitude: null, longitude: null },
+      budget: budget || 'KSH 0',
+      deadline: deadline || '',
+      assignedForeman: assignedForeman || null,
+      progress: progress || 0,
+      status: status || 'planning',
+      category: category || 'Commercial',
+      moneyPaid: moneyPaid || '',
+      moneyUsed: moneyUsed || '',
+      moneyRemaining: moneyRemaining || '',
+      moneyOwed: moneyOwed || '',
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
+    
+    res.json(project);
+  } catch (error) {
+    console.error('Create project error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Update Project
+app.put('/api/projects/:projectId', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const projectId = req.params.projectId;
+    const { 
+      name, 
+      client, 
+      location, 
+      budget, 
+      deadline, 
+      assignedForeman, 
+      progress, 
+      status, 
+      category, 
+      moneyPaid, 
+      moneyUsed, 
+      moneyRemaining, 
+      moneyOwed 
+    } = req.body;
+    
+    if (!name || !client) {
+      return res.status(400).json({ error: 'Missing required fields: name, client' });
+    }
+    
+    const project = await models.EnhancedProject.findByIdAndUpdate(
+      projectId,
+      {
+        name,
+        client,
+        location: location || { name: '', latitude: null, longitude: null },
+        budget: budget || 'KSH 0',
+        deadline: deadline || '',
+        assignedForeman: assignedForeman || null,
+        progress: progress || 0,
+        status: status || 'planning',
+        category: category || 'Commercial',
+        moneyPaid: moneyPaid || '',
+        moneyUsed: moneyUsed || '',
+        moneyRemaining: moneyRemaining || '',
+        moneyOwed: moneyOwed || '',
+        updatedAt: new Date()
+      },
+      { new: true }
+    );
+    
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+    
+    res.json(project);
+  } catch (error) {
+    console.error('Update project error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Register Worker with Face Recognition
+app.post('/api/workers/register', authMiddleware, upload.array('images', 5), async (req, res) => {
+  try {
+    const { name, nationalId, phone, projectId, dailyRate, skills, location, livenessPassed } = req.body;
+    
+    if (!name || !nationalId || !phone || !projectId) {
+      return res.status(400).json({ error: 'Missing required fields: name, nationalId, phone, projectId' });
+    }
+    
+    // Check if foreman is assigned to this project
+    const foreman = req.user;
+    const project = await models.EnhancedProject.findById(projectId);
+    
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+    
+    // Verify foreman is assigned to this project
+    if (!foreman.assignedProjects.includes(projectId)) {
+      return res.status(403).json({ error: 'You are not assigned to this project' });
+    }
+    
+    // Check if worker already exists
+    const existingWorker = await models.Worker.findOne({ nationalId });
+    if (existingWorker) {
+      return res.status(400).json({ error: 'Worker with this National ID already exists' });
+    }
+    
+    // Process face images
+    const faceImages = [];
+    const faceEmbeddings = [];
+    
+    // Handle uploaded face images
+    if (req.files) {
+      const faceImageFiles = Object.keys(req.files)
+        .filter(key => key.startsWith('faceImage'))
+        .map(key => req.files[key]);
+      
+      for (const file of faceImageFiles) {
+        // Save image and generate embedding (simplified - in production, use face recognition service)
+        const imagePath = `/uploads/worker-faces/${Date.now()}_${file.originalname}`;
+        faceImages.push(imagePath);
+        
+        // Generate face embedding (mock implementation)
+        faceEmbeddings.push({
+          embedding: generateMockEmbedding(),
+          confidence: 0.95,
+          createdAt: new Date()
+        });
+      }
+    }
+    
+    // Process liveness image
+    let livenessImage = null;
+    if (req.files && req.files.livenessImage) {
+      livenessImage = `/uploads/liveness/${Date.now()}_${req.files.livenessImage.originalname}`;
+    }
+    
+    // Create worker
+    const worker = await models.Worker.create({
+      name,
+      nationalId,
+      phone,
+      assignedProjects: [projectId],
+      dailyRate: parseFloat(dailyRate),
+      skills: skills || '',
+      registeredBy: foreman._id,
+      registrationDate: new Date(),
+      status: 'active',
+      faceImages,
+      faceEmbeddings,
+      livenessImage,
+      livenessPassed: livenessPassed === 'true',
+      registrationLocation: {
+        type: 'Point',
+        coordinates: [location ? parseFloat(location.longitude) : 0, location ? parseFloat(location.latitude) : 0]
+      }
+    });
+    
+    // Update project workers list
+    await models.EnhancedProject.findByIdAndUpdate(
+      projectId,
+      { $push: { workers: worker._id } }
+    );
+    
+    // Update foreman worker assignments
+    await models.User.findByIdAndUpdate(
+      foreman._id,
+      { $push: { workerAssignments: worker._id } }
+    );
+    
+    // Log registration for audit
+    await appendPortalNotification({
+      title: 'New Worker Registered',
+      message: `${foreman.name} registered ${name} for project ${project.name}`,
+      targets: ['*']
+    });
+    
+    res.json({
+      success: true,
+      worker: {
+        _id: worker._id,
+        name: worker.name,
+        nationalId: worker.nationalId,
+        phone: worker.phone,
+        dailyRate: worker.dailyRate,
+        skills: worker.skills,
+        status: worker.status
+      }
+    });
+    
+  } catch (error) {
+    console.error('Worker registration error:', error);
+    res.status(500).json({ error: 'Server error during worker registration' });
+  }
+});
+
+// Mock face embedding generation (replace with actual face recognition service)
+function generateMockEmbedding() {
+  return Array.from({ length: 128 }, () => Math.random() - 0.5);
+}
+
+// Mark Attendance with Face Recognition
+app.post('/api/attendance/mark', authMiddleware, async (req, res) => {
+  try {
+    const { projectId, workerId, location, faceImage, livenessData } = req.body;
+    
+    if (!projectId || !workerId || !location) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+    
+    const foreman = req.user;
+    
+    // Verify foreman is assigned to this project
+    if (!foreman.assignedProjects.includes(projectId)) {
+      return res.status(403).json({ error: 'You are not assigned to this project' });
+    }
+    
+    // Get project and worker
+    const project = await models.EnhancedProject.findById(projectId);
+    const worker = await models.Worker.findById(workerId);
+    
+    if (!project || !worker) {
+      return res.status(404).json({ error: 'Project or worker not found' });
+    }
+    
+    // Check if worker is assigned to this project
+    if (!worker.assignedProjects.includes(projectId)) {
+      return res.status(400).json({ error: 'Worker is not assigned to this project' });
+    }
+    
+    // Validate GPS location (within 50m of project)
+    if (!project.location || !project.location.latitude || !project.location.longitude) {
+      return res.status(400).json({ error: 'Project location not set' });
+    }
+    
+    const distance = calculateDistance(
+      parseFloat(location.latitude),
+      parseFloat(location.longitude),
+      project.location.latitude,
+      project.location.longitude
+    );
+    
+    if (distance > 50) {
+      return res.status(400).json({ 
+        error: 'Too far from project location', 
+        distance: Math.round(distance) 
+      });
+    }
+    
+    // Check if already marked today
+    const today = new Date().toISOString().split('T')[0];
+    const existingAttendance = await models.Attendance.findOne({
+      workerId,
+      projectId,
+      date: today
+    });
+    
+    if (existingAttendance) {
+      return res.status(400).json({ error: 'Attendance already marked for today' });
+    }
+    
+    // Face recognition validation (simplified)
+    let faceMatch = false;
+    let confidence = 0;
+    
+    if (faceImage && worker.faceEmbeddings && worker.faceEmbeddings.length > 0) {
+      // In production, use actual face recognition service
+      faceMatch = true; // Mock successful match
+      confidence = 0.92; // Mock confidence score
+    }
+    
+    // Liveness validation
+    let livenessPassed = false;
+    if (livenessData) {
+      livenessPassed = livenessData.passed === true;
+    }
+    
+    // Validate minimum requirements
+    if (!faceMatch || confidence < 0.85 || !livenessPassed) {
+      return res.status(400).json({ 
+        error: 'Attendance verification failed',
+        reasons: [
+          !faceMatch ? 'Face recognition failed' : null,
+          confidence < 0.85 ? 'Low confidence match' : null,
+          !livenessPassed ? 'Liveness check failed' : null
+        ].filter(Boolean)
+      });
+    }
+    
+    // Create attendance record
+    const attendance = await models.Attendance.create({
+      workerId,
+      projectId,
+      foremanId: foreman._id,
+      date: today,
+      time: new Date().toTimeString().split(' ')[0],
+      status: 'present',
+      checkInLocation: {
+        type: 'Point',
+        coordinates: [parseFloat(location.longitude), parseFloat(location.latitude)]
+      },
+      faceMatch: true,
+      faceConfidence: confidence,
+      livenessPassed: true,
+      verificationMethod: 'face_recognition'
+    });
+    
+    // Update worker attendance stats
+    await models.Worker.findByIdAndUpdate(workerId, {
+      $push: { attendanceRecords: attendance._id },
+      $inc: { totalDaysPresent: 1 }
+    });
+    
+    res.json({
+      success: true,
+      attendance: {
+        workerName: worker.name,
+        projectName: project.name,
+        time: attendance.time,
+        confidence: confidence,
+        location: { distance: Math.round(distance) }
+      }
+    });
+    
+  } catch (error) {
+    console.error('Attendance marking error:', error);
+    res.status(500).json({ error: 'Server error during attendance marking' });
+  }
+});
+
+// Get Today's Attendance for Foreman
+app.get('/api/attendance/today', authMiddleware, async (req, res) => {
+  try {
+    const { projectId } = req.query;
+    const foreman = req.user;
+    
+    let projectIds = foreman.assignedProjects;
+    if (projectId) {
+      if (!foreman.assignedProjects.includes(projectId)) {
+        return res.status(403).json({ error: 'You are not assigned to this project' });
+      }
+      projectIds = [projectId];
+    }
+    
+    const today = new Date().toISOString().split('T')[0];
+    
+    const attendance = await models.Attendance.find({
+      projectId: { $in: projectIds },
+      date: today
+    })
+    .populate('workerId', 'name nationalId phone')
+    .populate('projectId', 'name')
+    .sort({ time: 1 });
+    
+    // Get all assigned workers for comparison
+    const allWorkers = await models.Worker.find({
+      assignedProjects: { $in: projectIds }
+    }).select('name nationalId phone');
+    
+    // Mark workers who haven't checked in
+    const presentWorkerIds = attendance.map(a => a.workerId._id.toString());
+    const absentWorkers = allWorkers.filter(w => !presentWorkerIds.includes(w._id.toString()));
+    
+    res.json({
+      present: attendance,
+      absent: absentWorkers,
+      summary: {
+        total: allWorkers.length,
+        present: attendance.length,
+        absent: absentWorkers.length,
+        date: today
+      }
+    });
+    
+  } catch (error) {
+    console.error('Get attendance error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Helper function to calculate distance
+function calculateDistance(lat1, lon1, lat2, lon2) {
+  const R = 6371e3; // Earth's radius in meters
+  const φ1 = lat1 * Math.PI/180;
+  const φ2 = lat2 * Math.PI/180;
+  const Δφ = (lat2-lat1) * Math.PI/180;
+  const Δλ = (lon2-lon1) * Math.PI/180;
+  
+  const a = Math.sin(Δφ/2) * Math.sin(Δφ/2) +
+          Math.cos(φ1) * Math.cos(φ2) *
+          Math.sin(Δλ/2) * Math.sin(Δλ/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  
+  return R * c; // Distance in meters
+}
 
 // Create Project with Foreman Assignment
 app.post('/api/projects/create-with-foreman', authMiddleware, adminOnly, async (req, res) => {
