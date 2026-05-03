@@ -585,6 +585,8 @@ const PORTAL_KEYS = [
   'clientProjects',
   'clientDocuments',
   'clientInvoices',
+  'clientTransactions',
+  'clientNotifications',
   'careerApplications',
   'employeeTasks',
   'employeeTaskUpdates',
@@ -859,6 +861,21 @@ app.get('/api/portal/bootstrap', authMiddleware, requireApprovedAccount, async (
   }
 });
 
+app.get('/api/portal/key/:key', authMiddleware, requireApprovedAccount, async (req, res) => {
+  const { key } = req.params;
+  try {
+    if (!PORTAL_KEYS.includes(key)) return res.status(400).json({ error: 'Invalid key' });
+    
+    const portalState = await models.PortalState.findOne({ key: 'main' });
+    const data = portalState?.data?.[key] || [];
+    
+    res.json(data);
+  } catch (e) {
+    console.error('GET /api/portal/key/' + key, e.message || e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 app.put('/api/portal/key/:key', authMiddleware, requireApprovedAccount, async (req, res) => {
   const { key } = req.params;
   try {
@@ -866,8 +883,8 @@ app.put('/api/portal/key/:key', authMiddleware, requireApprovedAccount, async (r
     const body = req.body;
     await models.PortalState.findOneAndUpdate(
       { key: 'main' },
-      { $set: { [key]: body }, $setOnInsert: { key: 'main' } },
-      { upsert: true, new: true, runValidators: false }
+      { $set: { [`data.${key}`]: body } },
+      { upsert: true }
     );
     res.json({ ok: true });
   } catch (e) {
@@ -1524,7 +1541,24 @@ app.post('/api/projects', authMiddleware, adminOnly, async (req, res) => {
       moneyOwed 
     } = req.body;
     
+    console.log('Project creation request:', {
+      name,
+      client,
+      location,
+      budget,
+      deadline,
+      assignedForeman,
+      progress,
+      status,
+      category,
+      moneyPaid,
+      moneyUsed,
+      moneyRemaining,
+      moneyOwed
+    });
+    
     if (!name || !client) {
+      console.log('Missing required fields:', { name, client });
       return res.status(400).json({ error: 'Missing required fields: name, client' });
     }
     
