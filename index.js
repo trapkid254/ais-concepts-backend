@@ -1472,6 +1472,11 @@ app.get('/api/projects', authMiddleware, async (req, res) => {
       projects = await models.EnhancedProject.find().populate('client', 'name email').sort({ createdAt: -1 });
     }
     
+    console.log('=== FINAL RESPONSE ===');
+    console.log('About to send projects:', projects.length);
+    console.log('Projects being sent:', projects.map(p => ({ id: p._id, name: p.name, client: p.client })));
+    console.log('=== END FINAL RESPONSE ===');
+    
     res.json(projects);
   } catch (error) {
     console.error('Get projects error:', error);
@@ -2218,15 +2223,24 @@ app.post('/api/inquiries', authMiddleware, async (req, res) => {
   }
 });
 
-// Get Inquiries (for admin)
+// Get Inquiries (for admin and client)
 app.get('/api/inquiries', authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
+    const { client } = req.query;
+    
+    if (client && req.user.role === 'client') {
+      // Client can only see their own inquiries
+      const inquiries = await models.Inquiry.find({ 
+        clientEmail: req.user.email 
+      }).sort({ createdAt: -1 });
+      res.json(inquiries);
+    } else if (!client && req.user.role === 'admin') {
+      // Admin can see all inquiries
+      const inquiries = await models.Inquiry.find().sort({ createdAt: -1 });
+      res.json(inquiries);
+    } else {
       return res.status(403).json({ error: 'Access denied' });
     }
-    
-    const inquiries = await models.Inquiry.find().sort({ createdAt: -1 });
-    res.json(inquiries);
   } catch (error) {
     console.error('Get inquiries error:', error);
     res.status(500).json({ error: 'Server error' });
