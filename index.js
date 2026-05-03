@@ -1527,6 +1527,21 @@ app.delete('/api/projects/:projectId', authMiddleware, adminOnly, async (req, re
   }
 });
 
+// Helper to parse money strings like '5.00M', '500K', '1.5B' into actual numbers
+function parseMoney(val) {
+  if (typeof val === 'number') return val;
+  if (!val) return 0;
+  const str = String(val).replace(/,/g, '').trim().toUpperCase();
+  const match = str.match(/^([\d.]+)\s*(B|M|K)?$/);
+  if (!match) return parseFloat(str) || 0;
+  const num = parseFloat(match[1]) || 0;
+  const suffix = match[2];
+  if (suffix === 'B') return num * 1000000000;
+  if (suffix === 'M') return num * 1000000;
+  if (suffix === 'K') return num * 1000;
+  return num;
+}
+
 // Create Project
 app.post('/api/projects', authMiddleware, adminOnly, async (req, res) => {
   try {
@@ -1575,7 +1590,7 @@ app.post('/api/projects', authMiddleware, adminOnly, async (req, res) => {
         latitude: parseFloat(location?.latitude) || -1.2921,
         longitude: parseFloat(location?.longitude) || 36.8219
       },
-      budget: parseFloat(budget) || 0,
+      budget: parseMoney(budget),
       startDate: deadline ? new Date(deadline) : new Date(),
       endDate: deadline ? new Date(deadline) : new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
       foremanId: assignedForeman?._id || assignedForeman?.id || null,
@@ -1583,10 +1598,10 @@ app.post('/api/projects', authMiddleware, adminOnly, async (req, res) => {
       progress: parseFloat(progress) || 0,
       status: (status || 'planning').toLowerCase(),
       category: category || 'Commercial',
-      moneyPaid: parseFloat(moneyPaid) || 0,
-      moneyUsed: parseFloat(moneyUsed) || 0,
-      moneyRemaining: parseFloat(moneyRemaining) || 0,
-      moneyOwed: parseFloat(moneyOwed) || 0,
+      moneyPaid: parseMoney(moneyPaid),
+      moneyUsed: parseMoney(moneyUsed),
+      moneyRemaining: parseMoney(moneyRemaining),
+      moneyOwed: parseMoney(moneyOwed),
       createdBy: req.user.sub
     });
     
