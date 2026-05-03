@@ -21,11 +21,28 @@ const app = express();
 
 function resolveCorsOrigin() {
   const raw = process.env.CLIENT_ORIGIN;
-  if (!raw || raw === 'true') return true;
+  
+  // Always allow localhost origins for development
+  const allowedOrigins = [
+    'http://localhost:5502',
+    'http://127.0.0.1:5502',
+    'http://localhost:3000',
+    'http://127.0.0.1:3000'
+  ];
+  
+  if (!raw || raw === 'true') {
+    // In development, allow localhost origins
+    return allowedOrigins;
+  }
+  
   const parts = raw.split(',').map((s) => s.trim()).filter(Boolean);
-  if (parts.length === 0) return true;
-  if (parts.length === 1) return parts[0];
-  return parts;
+  if (parts.length === 0) {
+    // If no specific origins configured, allow localhost
+    return allowedOrigins;
+  }
+  
+  // Combine configured origins with localhost
+  return [...parts, ...allowedOrigins];
 }
 
 app.use(
