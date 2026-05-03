@@ -9,6 +9,7 @@ const fs = require('fs');
 const multer = require('multer');
 const crypto = require('crypto');
 const cookieParser = require('cookie-parser');
+const { Server } = require('socket.io');
 
 const { signToken, authMiddleware } = require('./auth');
 const models = require('./models');
@@ -141,13 +142,13 @@ app.post('/api/auth/register', async (req, res) => {
         'Registration received. An administrator will approve your account before you can sign in.'
     });
     try {
-      await appendPortalNotification({
+      await broadcastNotification({
         title: 'New client registration',
         message: `${name || email} (${email}) is awaiting approval.`,
         targets: ['*']
       });
     } catch (e) {
-      console.error(e);
+      console.error('Notification error:', e);
     }
   } catch (e) {
     console.error(e);
@@ -184,7 +185,7 @@ app.post('/api/auth/register-employee', async (req, res) => {
         'Registration received. An administrator will approve your account before you can sign in.'
     });
     try {
-      await appendPortalNotification({
+      await broadcastNotification({
         title: 'New employee registration',
         message: `${name || email} (${email}) is awaiting approval.`,
         targets: ['*']
@@ -947,21 +948,21 @@ app.put('/api/admin/site/home', authMiddleware, adminOnly, async (req, res) => {
 // Site Statistics Endpoints
 app.get('/api/statistics', async (req, res) => {
   try {
+    // Get actual counts from database
+    const [projectsCount, clientsCount, employeesCount, teamCount] = await Promise.all([
+      models.EnhancedProject.countDocuments(),
+      models.User.countDocuments({ role: 'client', approvalStatus: 'approved' }),
+      models.User.countDocuments({ role: 'employee', approvalStatus: 'approved' }),
+      models.User.countDocuments({ role: { $in: ['employee', 'foreman', 'admin'] }, approvalStatus: 'approved' })
+    ]);
+
     const doc = await models.SiteStatistics.findOne({ key: 'main' }).lean();
-    if (!doc) {
-      // Return default values if no document exists
-      return res.json({
-        projectsDone: 150,
-        happyClients: 80,
-        yearsExperience: 15,
-        teamMembers: 25
-      });
-    }
+    
     res.json({
-      projectsDone: doc.projectsDone,
-      happyClients: doc.happyClients,
-      yearsExperience: doc.yearsExperience,
-      teamMembers: doc.teamMembers
+      projectsDone: projectsCount,
+      happyClients: clientsCount,
+      yearsExperience: doc?.yearsExperience || 15,
+      teamMembers: teamCount
     });
   } catch (e) {
     console.error(e);
@@ -1069,6 +1070,12 @@ mongoose
     } catch (e) {
       console.error('ensureDefaultAdmin:', e);
     }
+  })
+  .catch((err) => {
+    console.error('MongoDB connection failed', err);
+    process.exit(1);
+  });
+
     // ===== WORKER MANAGEMENT ENDPOINTS =====
 
 // Worker Registration with Face Recognition
@@ -2298,11 +2305,76 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
   return distance;
 }
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
       console.log(`AIS Concepts backend running on port ${PORT}`);
     });
-  })
-  .catch((err) => {
-    console.error('MongoDB connection failed', err);
-    process.exit(1);
+
+// Initialize Socket.IO for real-time notifications
+const io = new Server(server, {
+  cors: {
+    origin: resolveCorsOrigin(),
+    credentials: true
+  }
+});
+
+// Store connected users by their role and email
+const connectedUsers = new Map();
+
+io.on('connection', (socket) => {
+  console.log('User connected:', socket.id);
+  
+  // Handle user authentication and registration
+  socket.on('register-user', (userData) => {
+    const { email, role, token } = userData;
+    if (email && role) {
+      connectedUsers.set(socket.id, { email, role, socket });
+      console.log(`User registered: ${email} (${role})`);
+      
+      // Join role-based rooms for targeted notifications
+      socket.join(`role-${role}`);
+      socket.join(`user-${email.toLowerCase()}`);
+    }
   });
+  
+  // Handle disconnection
+  socket.on('disconnect', () => {
+    const user = connectedUsers.get(socket.id);
+    if (user) {
+      console.log(`User disconnected: ${user.email} (${user.role})`);
+      connectedUsers.delete(socket.id);
+    }
+  });
+});
+
+// Enhanced notification function with real-time broadcasting
+async function broadcastNotification(notification) {
+  // Store notification in database (existing logic)
+  await appendPortalNotification(notification);
+  
+  // Broadcast to relevant users in real-time
+  const targets = notification.targets || [];
+  
+  if (targets.includes('*')) {
+    // Send to all connected users
+    io.emit('new-notification', notification);
+  } else {
+    // Send to specific targets
+    targets.forEach(target => {
+      if (target === 'admin') {
+        io.to('role-admin').emit('new-notification', notification);
+      } else if (target === 'client') {
+        io.to('role-client').emit('new-notification', notification);
+      } else if (target === 'employee') {
+        io.to('role-employee').emit('new-notification', notification);
+      } else if (target === 'foreman') {
+        io.to('role-foreman').emit('new-notification', notification);
+      } else {
+        // Specific email target
+        io.to(`user-${target.toLowerCase()}`).emit('new-notification', notification);
+      }
+    });
+  }
+}
+
+// Export io for use in other modules
+global.io = io;
