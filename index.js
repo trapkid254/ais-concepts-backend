@@ -204,11 +204,44 @@ app.post('/api/auth/login', async (req, res) => {
     const { email, username, password, portalType } = req.body;
     const role = portalType || 'client';
     const identifier = (email || username || '').trim();
+    
+    console.log('Login attempt:', {
+      email,
+      username,
+      portalType,
+      role,
+      identifier,
+      hasPassword: !!password
+    });
+    
     const user = await findUserForLogin(identifier);
+    console.log('User found:', user ? { 
+      id: user._id, 
+      email: user.email, 
+      username: user.username, 
+      role: user.role,
+      approvalStatus: user.approvalStatus 
+    } : null);
+    
     if (!user) return res.status(401).json({ error: 'Invalid credentials' });
 
     const passwordOk = await bcrypt.compare(password || '', user.passwordHash);
-    if (!passwordOk || user.role !== role) return res.status(401).json({ error: 'Invalid credentials' });
+    
+    console.log('Password validation:', {
+      passwordProvided: !!password,
+      passwordOk: passwordOk,
+      userRole: user.role,
+      requiredRole: role,
+      roleMatch: user.role === role
+    });
+    
+    if (!passwordOk || user.role !== role) {
+      console.log('Authentication failed:', {
+        passwordFailed: !passwordOk,
+        roleFailed: user.role !== role
+      });
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
 
     if (user.role !== 'admin' && user.approvalStatus === 'pending') {
       return res.status(403).json({
