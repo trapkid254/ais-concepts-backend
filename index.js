@@ -2385,9 +2385,42 @@ app.get('/api/workers', authMiddleware, async (req, res) => {
   try {
     // Return mock workers data for now
     const workers = [
-      { _id: '1', name: 'John Doe', email: 'john@example.com', phone: '+254712345678', dailyRate: 1500, assignedProjects: ['Project A', 'Project B'] },
-      { _id: '2', name: 'Jane Smith', email: 'jane@example.com', phone: '+254712345679', dailyRate: 1400, assignedProjects: ['Project A'] },
-      { _id: '3', name: 'Mike Johnson', email: 'mike@example.com', phone: '+254712345680', dailyRate: 1600, assignedProjects: ['Project B', 'Project C'] }
+      { 
+        _id: '1', 
+        name: 'John Doe', 
+        email: 'john@example.com', 
+        phone: '+254712345678', 
+        dailyRate: 1500, 
+        assignedProjects: ['Project A', 'Project B'],
+        nationalId: '12345678',
+        faceData: {
+          faceImage: null
+        }
+      },
+      { 
+        _id: '2', 
+        name: 'Jane Smith', 
+        email: 'jane@example.com', 
+        phone: '+254712345679', 
+        dailyRate: 1400, 
+        assignedProjects: ['Project A'],
+        nationalId: '87654321',
+        faceData: {
+          faceImage: null
+        }
+      },
+      { 
+        _id: '3', 
+        name: 'Mike Johnson', 
+        email: 'mike@example.com', 
+        phone: '+254712345680', 
+        dailyRate: 1600, 
+        assignedProjects: ['Project B', 'Project C'],
+        nationalId: '11223344',
+        faceData: {
+          faceImage: null
+        }
+      }
     ];
     res.json({ workers });
   } catch (error) {
