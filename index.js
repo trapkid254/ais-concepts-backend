@@ -409,9 +409,54 @@ app.delete('/api/admin/users/:id', authMiddleware, adminOnly, async (req, res) =
   }
 });
 
-/* ——— Public CMS ——— */
+/* ——— Public CMS & Authenticated Project API ——— */
 app.get('/api/projects', async (req, res) => {
   try {
+    const authHeader = req.headers.authorization;
+    const { client } = req.query;
+
+    // If authenticated and requesting client-specific projects
+    if (authHeader && client) {
+      try {
+        const decoded = jwt.verify(authHeader.replace('Bearer ', ''), process.env.JWT_SECRET || 'dev-secret-key');
+        if (decoded.role === 'client') {
+          const projects = await models.EnhancedProject.find({
+            client: decoded.sub
+          }).populate('client', 'name email').sort({ createdAt: -1 });
+          return res.json(projects);
+        }
+      } catch (e) {
+        // Token invalid, fall through to public
+      }
+    }
+
+    // If authenticated admin/foreman requesting all portal projects
+    if (authHeader && !client) {
+      try {
+        const decoded = jwt.verify(authHeader.replace('Bearer ', ''), process.env.JWT_SECRET || 'dev-secret-key');
+        if (decoded.role === 'admin') {
+          const projects = await models.EnhancedProject.find().populate('client', 'name email').sort({ createdAt: -1 });
+          return res.json(projects);
+        }
+        if (decoded.role === 'foreman') {
+          const projects = await models.EnhancedProject.find({
+            foremanId: decoded.sub
+          }).populate('client', 'name email').sort({ createdAt: -1 });
+          return res.json(projects);
+        }
+        // Employee can see projects they're assigned to
+        if (decoded.role === 'employee') {
+          const projects = await models.EnhancedProject.find({
+            workers: decoded.sub
+          }).populate('client', 'name email').sort({ createdAt: -1 });
+          return res.json(projects);
+        }
+      } catch (e) {
+        // Token invalid, fall through to public
+      }
+    }
+
+    // Public: return website portfolio projects
     const list = await models.WebsiteProject.find().sort({ sortOrder: 1, title: 1 }).lean();
     const mapped = list.map((p, i) => ({
       id: p._id,
@@ -1425,69 +1470,6 @@ app.post('/api/foreman/create', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
-// Get Projects (with optional client filter)
-app.get('/api/projects', authMiddleware, async (req, res) => {
-  try {
-    console.log('=== PROJECTS API HIT ===');
-    console.log('Query params:', req.query);
-    console.log('User:', { id: req.user.sub, email: req.user.email, role: req.user.role });
-    
-    const { client } = req.query;
-    let projects;
-    
-    if (client) {
-      // Filter projects by client user ID
-      console.log('=== CLIENT PROJECTS FILTERING ===');
-      console.log('Client projects request:', {
-        client: client,
-        userId: req.user.sub,
-        userRole: req.user.role
-      });
-      
-      // First, let's see what projects exist and their client assignments
-      const allProjects = await models.EnhancedProject.find().select('name client').lean();
-      console.log('All projects and their client assignments:');
-      allProjects.forEach(p => {
-        console.log(`  - ${p.name}: client = ${p.client}`);
-      });
-      
-      console.log('Executing client filter query...');
-      console.log('Query: { client:', req.user.sub, '}');
-      
-      projects = await models.EnhancedProject.find({ 
-        client: req.user.sub
-      }).populate('client', 'name email').sort({ createdAt: -1 });
-      
-      console.log('Client projects found:', projects.length);
-      projects.forEach(p => {
-        console.log('Project:', {
-          id: p._id,
-          name: p.name,
-          client: p.client,
-          clientName: p.client?.name
-        });
-      });
-      console.log('=== END CLIENT PROJECTS FILTERING ===');
-    } else {
-      // Get all projects for admin users
-      if (req.user.role !== 'admin') {
-        return res.status(403).json({ error: 'Access denied' });
-      }
-      projects = await models.EnhancedProject.find().populate('client', 'name email').sort({ createdAt: -1 });
-    }
-    
-    console.log('=== FINAL RESPONSE ===');
-    console.log('About to send projects:', projects.length);
-    console.log('Projects being sent:', projects.map(p => ({ id: p._id, name: p.name, client: p.client })));
-    console.log('=== END FINAL RESPONSE ===');
-    
-    console.log('SENDING RESPONSE WITH', projects.length, 'PROJECTS');
-    res.json(projects);
-  } catch (error) {
-    console.error('Get projects error:', error);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
 
 // Get Individual Project (for admin)
 app.get('/api/projects/:projectId', authMiddleware, adminOnly, async (req, res) => {
@@ -1589,12 +1571,15 @@ app.post('/api/projects', authMiddleware, adminOnly, async (req, res) => {
       name,
       client,
       location: {
-        address: location?.name || '',
-        latitude: location?.latitude || null,
-        longitude: location?.longitude || null
+        address: location?.name || location?.address || '',
+        latitude: parseFloat(location?.latitude) || -1.2921,
+        longitude: parseFloat(location?.longitude) || 36.8219
       },
       budget: parseFloat(budget) || 0,
-      assignedForeman: assignedForeman || null,
+      startDate: deadline ? new Date(deadline) : new Date(),
+      endDate: deadline ? new Date(deadline) : new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
+      foremanId: assignedForeman?._id || assignedForeman?.id || null,
+      foremanName: assignedForeman?.name || '',
       progress: parseFloat(progress) || 0,
       status: status || 'planning',
       category: category || 'Commercial',
@@ -1602,9 +1587,7 @@ app.post('/api/projects', authMiddleware, adminOnly, async (req, res) => {
       moneyUsed: parseFloat(moneyUsed) || 0,
       moneyRemaining: parseFloat(moneyRemaining) || 0,
       moneyOwed: parseFloat(moneyOwed) || 0,
-      createdBy: req.user.sub,
-      createdAt: new Date(),
-      updatedAt: new Date()
+      createdBy: req.user.sub
     });
     
     res.json(project);
@@ -2253,26 +2236,6 @@ app.get('/api/inquiries', authMiddleware, async (req, res) => {
     }
   } catch (error) {
     console.error('Get inquiries error:', error);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-/* -- Portal Key Management -- */
-app.put('/api/portal/key/:key', authMiddleware, async (req, res) => {
-  try {
-    const key = req.params.key;
-    const value = req.body;
-    
-    // Store portal key data in user's session or database
-    // This is a simple key-value store for portal state management
-    const userId = req.user.sub;
-    
-    // For now, just return success - the actual storage can be implemented later
-    console.log(`Portal key sync: ${key} for user ${userId}`);
-    
-    res.json({ success: true, message: 'Portal key synced successfully' });
-  } catch (error) {
-    console.error('Portal key sync error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
