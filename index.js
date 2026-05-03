@@ -1428,6 +1428,10 @@ app.post('/api/foreman/create', authMiddleware, adminOnly, async (req, res) => {
 // Get Projects (with optional client filter)
 app.get('/api/projects', authMiddleware, async (req, res) => {
   try {
+    console.log('=== PROJECTS API HIT ===');
+    console.log('Query params:', req.query);
+    console.log('User:', { id: req.user.sub, email: req.user.email, role: req.user.role });
+    
     const { client } = req.query;
     let projects;
     
@@ -1477,6 +1481,7 @@ app.get('/api/projects', authMiddleware, async (req, res) => {
     console.log('Projects being sent:', projects.map(p => ({ id: p._id, name: p.name, client: p.client })));
     console.log('=== END FINAL RESPONSE ===');
     
+    console.log('SENDING RESPONSE WITH', projects.length, 'PROJECTS');
     res.json(projects);
   } catch (error) {
     console.error('Get projects error:', error);
