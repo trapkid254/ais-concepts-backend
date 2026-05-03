@@ -259,6 +259,46 @@ const siteStatisticsSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now }
 }, { timestamps: true });
 
+const invoiceSchema = new mongoose.Schema({
+  invoiceNumber: { type: String, required: true, unique: true },
+  project: { type: mongoose.Schema.Types.ObjectId, ref: 'EnhancedProject' },
+  client: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  amount: { type: Number, required: true },
+  dueDate: { type: Date, required: true },
+  status: { 
+    type: String, 
+    enum: ['pending', 'paid', 'overdue', 'cancelled'], 
+    default: 'pending' 
+  },
+  description: { type: String, default: '' },
+  items: [{
+    description: { type: String, required: true },
+    quantity: { type: Number, required: true, default: 1 },
+    unitPrice: { type: Number, required: true },
+    total: { type: Number, required: true }
+  }],
+  createdAt: { type: Date, default: Date.now },
+  paidAt: { type: Date }
+}, { timestamps: true });
+
+const documentSchema = new mongoose.Schema({
+  title: { type: String, required: true },
+  fileName: { type: String, required: true },
+  filePath: { type: String, required: true },
+  fileSize: { type: Number, required: true },
+  mimeType: { type: String, required: true },
+  project: { type: mongoose.Schema.Types.ObjectId, ref: 'EnhancedProject' },
+  uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  category: { 
+    type: String, 
+    enum: ['contract', 'blueprint', 'permit', 'invoice', 'report', 'other'], 
+    default: 'other' 
+  },
+  description: { type: String, default: '' },
+  isPublic: { type: Boolean, default: false },
+  createdAt: { type: Date, default: Date.now }
+}, { timestamps: true });
+
 module.exports = {
   User: mongoose.model('User', userSchema),
   WebsiteProject: mongoose.model('WebsiteProject', websiteProjectSchema),
@@ -278,5 +318,7 @@ module.exports = {
   Payroll: mongoose.model('Payroll', payrollSchema),
   FaceSession: mongoose.model('FaceSession', faceSessionSchema),
   Inquiry: mongoose.model('Inquiry', inquirySchema),
-  SiteStatistics: mongoose.model('SiteStatistics', siteStatisticsSchema)
+  SiteStatistics: mongoose.model('SiteStatistics', siteStatisticsSchema),
+  Invoice: mongoose.model('Invoice', invoiceSchema),
+  Document: mongoose.model('Document', documentSchema)
 };
