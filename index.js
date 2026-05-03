@@ -1415,9 +1415,25 @@ app.get('/api/projects', authMiddleware, async (req, res) => {
     
     if (client) {
       // Filter projects by client user ID
+      console.log('Client projects request:', {
+        client: client,
+        userId: req.user.sub,
+        userRole: req.user.role
+      });
+      
       projects = await models.EnhancedProject.find({ 
         client: req.user.sub
       }).populate('client', 'name email').sort({ createdAt: -1 });
+      
+      console.log('Client projects found:', projects.length);
+      projects.forEach(p => {
+        console.log('Project:', {
+          id: p._id,
+          name: p.name,
+          client: p.client,
+          clientName: p.client?.name
+        });
+      });
     } else {
       // Get all projects for admin users
       if (req.user.role !== 'admin') {
