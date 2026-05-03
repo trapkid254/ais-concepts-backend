@@ -2454,7 +2454,8 @@ app.get('/api/payroll/stats', authMiddleware, async (req, res) => {
       totalPayroll: 45000,
       monthlyPayroll: 45000,
       averageSalary: 1500,
-      workerCount: 30
+      workerCount: 30,
+      currency: 'KSH'
     };
     res.json(stats);
   } catch (error) {
