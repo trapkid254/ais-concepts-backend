@@ -1610,7 +1610,12 @@ app.post('/api/projects', authMiddleware, adminOnly, async (req, res) => {
     res.json(project);
   } catch (error) {
     console.error('Create project error:', error);
-    res.status(500).json({ error: 'Server error' });
+    console.error('Error details:', {
+      message: error.message,
+      stack: error.stack,
+      name: error.name
+    });
+    res.status(500).json({ error: 'Server error', details: error.message });
   }
 });
 
