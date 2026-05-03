@@ -2383,46 +2383,8 @@ async function broadcastNotification(notification) {
 // ===== WORKERS API =====
 app.get('/api/workers', authMiddleware, async (req, res) => {
   try {
-    // Return mock workers data for now
-    const workers = [
-      { 
-        _id: '1', 
-        name: 'John Doe', 
-        email: 'john@example.com', 
-        phone: '+254712345678', 
-        dailyRate: 1500, 
-        assignedProjects: ['Project A', 'Project B'],
-        nationalId: '12345678',
-        faceData: {
-          faceImage: null
-        }
-      },
-      { 
-        _id: '2', 
-        name: 'Jane Smith', 
-        email: 'jane@example.com', 
-        phone: '+254712345679', 
-        dailyRate: 1400, 
-        assignedProjects: ['Project A'],
-        nationalId: '87654321',
-        faceData: {
-          faceImage: null
-        }
-      },
-      { 
-        _id: '3', 
-        name: 'Mike Johnson', 
-        email: 'mike@example.com', 
-        phone: '+254712345680', 
-        dailyRate: 1600, 
-        assignedProjects: ['Project B', 'Project C'],
-        nationalId: '11223344',
-        faceData: {
-          faceImage: null
-        }
-      }
-    ];
-    res.json({ workers });
+    // Return empty workers data for now - no static data
+    res.json({ workers: [] });
   } catch (error) {
     console.error('Get workers error:', error);
     res.status(500).json({ error: 'Server error' });
@@ -2432,14 +2394,13 @@ app.get('/api/workers', authMiddleware, async (req, res) => {
 // ===== ATTENDANCE API =====
 app.get('/api/attendance/stats', authMiddleware, async (req, res) => {
   try {
-    // Return mock attendance stats for now
-    const stats = {
-      present: 12,
-      absent: 3,
-      late: 2,
-      total: 17
-    };
-    res.json(stats);
+    // Return empty attendance stats for now - no static data
+    res.json({
+      present: 0,
+      absent: 0,
+      late: 0,
+      total: 0
+    });
   } catch (error) {
     console.error('Get attendance stats error:', error);
     res.status(500).json({ error: 'Server error' });
@@ -2449,15 +2410,14 @@ app.get('/api/attendance/stats', authMiddleware, async (req, res) => {
 // ===== PAYROLL API =====
 app.get('/api/payroll/stats', authMiddleware, async (req, res) => {
   try {
-    // Return mock payroll stats for now
-    const stats = {
-      totalPayroll: 45000,
-      monthlyPayroll: 45000,
-      averageSalary: 1500,
-      workerCount: 30,
+    // Return empty payroll stats for now - no static data
+    res.json({
+      totalPayroll: 0,
+      monthlyPayroll: 0,
+      averageSalary: 0,
+      workerCount: 0,
       currency: 'KSH'
-    };
-    res.json(stats);
+    });
   } catch (error) {
     console.error('Get payroll stats error:', error);
     res.status(500).json({ error: 'Server error' });
