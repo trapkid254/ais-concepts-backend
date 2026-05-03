@@ -22,12 +22,13 @@ const app = express();
 function resolveCorsOrigin() {
   const raw = process.env.CLIENT_ORIGIN;
   
-  // Always allow localhost origins for development
+  // Always allow localhost origins for development and production
   const allowedOrigins = [
     'http://localhost:5502',
     'http://127.0.0.1:5502',
     'http://localhost:3000',
-    'http://127.0.0.1:3000'
+    'http://127.0.0.1:3000',
+    'https://aisconcepts.com'
   ];
   
   if (!raw || raw === 'true') {
@@ -1432,11 +1433,22 @@ app.get('/api/projects', authMiddleware, async (req, res) => {
     
     if (client) {
       // Filter projects by client user ID
+      console.log('=== CLIENT PROJECTS FILTERING ===');
       console.log('Client projects request:', {
         client: client,
         userId: req.user.sub,
         userRole: req.user.role
       });
+      
+      // First, let's see what projects exist and their client assignments
+      const allProjects = await models.EnhancedProject.find().select('name client').lean();
+      console.log('All projects and their client assignments:');
+      allProjects.forEach(p => {
+        console.log(`  - ${p.name}: client = ${p.client}`);
+      });
+      
+      console.log('Executing client filter query...');
+      console.log('Query: { client:', req.user.sub, '}');
       
       projects = await models.EnhancedProject.find({ 
         client: req.user.sub
@@ -1451,6 +1463,7 @@ app.get('/api/projects', authMiddleware, async (req, res) => {
           clientName: p.client?.name
         });
       });
+      console.log('=== END CLIENT PROJECTS FILTERING ===');
     } else {
       // Get all projects for admin users
       if (req.user.role !== 'admin') {
