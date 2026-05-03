@@ -1364,16 +1364,16 @@ app.get('/api/projects', authMiddleware, async (req, res) => {
     let projects;
     
     if (client) {
-      // Filter projects by client email
+      // Filter projects by client user ID
       projects = await models.EnhancedProject.find({ 
-        client: { $regex: new RegExp(client, 'i') }
-      }).sort({ createdAt: -1 });
+        client: req.user.sub
+      }).populate('client', 'name email').sort({ createdAt: -1 });
     } else {
       // Get all projects for admin users
       if (req.user.role !== 'admin') {
         return res.status(403).json({ error: 'Access denied' });
       }
-      projects = await models.EnhancedProject.find().sort({ createdAt: -1 });
+      projects = await models.EnhancedProject.find().populate('client', 'name email').sort({ createdAt: -1 });
     }
     
     res.json(projects);
@@ -1465,17 +1465,21 @@ app.post('/api/projects', authMiddleware, adminOnly, async (req, res) => {
     const project = await models.EnhancedProject.create({
       name,
       client,
-      location: location || { name: '', latitude: null, longitude: null },
-      budget: budget || 'KSH 0',
-      deadline: deadline || '',
+      location: {
+        address: location?.name || '',
+        latitude: location?.latitude || null,
+        longitude: location?.longitude || null
+      },
+      budget: parseFloat(budget) || 0,
       assignedForeman: assignedForeman || null,
-      progress: progress || 0,
+      progress: parseFloat(progress) || 0,
       status: status || 'planning',
       category: category || 'Commercial',
-      moneyPaid: moneyPaid || '',
-      moneyUsed: moneyUsed || '',
-      moneyRemaining: moneyRemaining || '',
-      moneyOwed: moneyOwed || '',
+      moneyPaid: parseFloat(moneyPaid) || 0,
+      moneyUsed: parseFloat(moneyUsed) || 0,
+      moneyRemaining: parseFloat(moneyRemaining) || 0,
+      moneyOwed: parseFloat(moneyOwed) || 0,
+      createdBy: req.user.sub,
       createdAt: new Date(),
       updatedAt: new Date()
     });
@@ -2028,16 +2032,16 @@ app.get('/api/documents', authMiddleware, async (req, res) => {
     let documents;
     
     if (client) {
-      // Filter documents by client email
+      // Filter documents by client user ID
       documents = await models.Document.find({ 
-        client: { $regex: new RegExp(client, 'i') }
-      }).sort({ createdAt: -1 });
+        uploadedBy: req.user.sub
+      }).populate('project', 'title').sort({ createdAt: -1 });
     } else {
       // Get all documents for admin users
       if (req.user.role !== 'admin') {
         return res.status(403).json({ error: 'Access denied' });
       }
-      documents = await models.Document.find().sort({ createdAt: -1 });
+      documents = await models.Document.find().populate('project', 'title').sort({ createdAt: -1 });
     }
     
     res.json(documents);
@@ -2054,16 +2058,16 @@ app.get('/api/invoices', authMiddleware, async (req, res) => {
     let invoices;
     
     if (client) {
-      // Filter invoices by client email
+      // Filter invoices by client user ID
       invoices = await models.Invoice.find({ 
-        client: { $regex: new RegExp(client, 'i') }
-      }).sort({ createdAt: -1 });
+        client: req.user.sub
+      }).populate('project', 'title').sort({ createdAt: -1 });
     } else {
       // Get all invoices for admin users
       if (req.user.role !== 'admin') {
         return res.status(403).json({ error: 'Access denied' });
       }
-      invoices = await models.Invoice.find().sort({ createdAt: -1 });
+      invoices = await models.Invoice.find().populate('project', 'title').sort({ createdAt: -1 });
     }
     
     res.json(invoices);

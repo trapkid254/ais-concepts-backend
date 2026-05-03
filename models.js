@@ -78,6 +78,7 @@ const workerSchema = new mongoose.Schema({
 // Enhanced Project Schema with GPS and Foreman
 const enhancedProjectSchema = new mongoose.Schema({
   name: { type: String, required: true },
+  client: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   location: {
     latitude: { type: Number, required: true },
     longitude: { type: Number, required: true },
@@ -94,6 +95,12 @@ const enhancedProjectSchema = new mongoose.Schema({
     default: 'planning' 
   },
   budget: { type: Number, required: true },
+  moneyPaid: { type: Number, default: 0 },
+  moneyUsed: { type: Number, default: 0 },
+  moneyOwed: { type: Number, default: 0 },
+  moneyRemaining: { type: Number, default: 0 },
+  progress: { type: Number, default: 0 },
+  category: { type: String, default: 'Commercial' },
   workers: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Worker' }],
   // Project creation workflow tracking
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
