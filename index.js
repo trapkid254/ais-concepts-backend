@@ -2380,5 +2380,55 @@ async function broadcastNotification(notification) {
   }
 }
 
+// ===== WORKERS API =====
+app.get('/api/workers', authMiddleware, async (req, res) => {
+  try {
+    // Return mock workers data for now
+    const workers = [
+      { _id: '1', name: 'John Doe', email: 'john@example.com', phone: '+254712345678', dailyRate: 1500, assignedProjects: ['Project A', 'Project B'] },
+      { _id: '2', name: 'Jane Smith', email: 'jane@example.com', phone: '+254712345679', dailyRate: 1400, assignedProjects: ['Project A'] },
+      { _id: '3', name: 'Mike Johnson', email: 'mike@example.com', phone: '+254712345680', dailyRate: 1600, assignedProjects: ['Project B', 'Project C'] }
+    ];
+    res.json({ workers });
+  } catch (error) {
+    console.error('Get workers error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ===== ATTENDANCE API =====
+app.get('/api/attendance/stats', authMiddleware, async (req, res) => {
+  try {
+    // Return mock attendance stats for now
+    const stats = {
+      present: 12,
+      absent: 3,
+      late: 2,
+      total: 17
+    };
+    res.json(stats);
+  } catch (error) {
+    console.error('Get attendance stats error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ===== PAYROLL API =====
+app.get('/api/payroll/stats', authMiddleware, async (req, res) => {
+  try {
+    // Return mock payroll stats for now
+    const stats = {
+      totalPayroll: 45000,
+      monthlyPayroll: 45000,
+      averageSalary: 1500,
+      workerCount: 30
+    };
+    res.json(stats);
+  } catch (error) {
+    console.error('Get payroll stats error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Export io for use in other modules
 global.io = io;
