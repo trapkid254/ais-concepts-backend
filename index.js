@@ -1654,13 +1654,39 @@ app.post('/api/projects', authMiddleware, adminOnly, upload.array('images', 10),
       moneyOwed 
     } = req.body;
     
+    // Parse JSON strings from FormData
+    let parsedLocation = {};
+    let parsedAssignedForeman = null;
+    
+    if (location && typeof location === 'string') {
+      try {
+        parsedLocation = JSON.parse(location);
+      } catch (e) {
+        console.error('Error parsing location:', e);
+        parsedLocation = { name: location, latitude: null, longitude: null };
+      }
+    } else if (location) {
+      parsedLocation = location;
+    }
+    
+    if (assignedForeman && typeof assignedForeman === 'string') {
+      try {
+        parsedAssignedForeman = JSON.parse(assignedForeman);
+      } catch (e) {
+        console.error('Error parsing assignedForeman:', e);
+        parsedAssignedForeman = null;
+      }
+    } else if (assignedForeman) {
+      parsedAssignedForeman = assignedForeman;
+    }
+    
     console.log('Project creation request:', {
       name,
       client,
-      location,
+      location: parsedLocation,
       budget,
       deadline,
-      assignedForeman,
+      assignedForeman: parsedAssignedForeman,
       progress,
       status,
       category,
@@ -1687,15 +1713,15 @@ app.post('/api/projects', authMiddleware, adminOnly, upload.array('images', 10),
       name,
       client,
       location: {
-        address: location?.name || location?.address || '',
-        latitude: parseFloat(location?.latitude) || -1.2921,
-        longitude: parseFloat(location?.longitude) || 36.8219
+        address: parsedLocation?.name || parsedLocation?.address || '',
+        latitude: parseFloat(parsedLocation?.latitude) || -1.2921,
+        longitude: parseFloat(parsedLocation?.longitude) || 36.8219
       },
       budget: parseMoney(budget),
       startDate: deadline ? new Date(deadline) : new Date(),
       endDate: deadline ? new Date(deadline) : new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
-      foremanId: assignedForeman?._id || assignedForeman?.id || null,
-      foremanName: assignedForeman?.name || '',
+      foremanId: parsedAssignedForeman?._id || parsedAssignedForeman?.id || null,
+      foremanName: parsedAssignedForeman?.name || '',
       progress: parseFloat(progress) || 0,
       status: (status || 'planning').toLowerCase(),
       category: category || 'Commercial',
@@ -1739,6 +1765,32 @@ app.put('/api/projects/:projectId', authMiddleware, adminOnly, upload.array('ima
       moneyOwed 
     } = req.body;
     
+    // Parse JSON strings from FormData
+    let parsedLocation = {};
+    let parsedAssignedForeman = null;
+    
+    if (location && typeof location === 'string') {
+      try {
+        parsedLocation = JSON.parse(location);
+      } catch (e) {
+        console.error('Error parsing location:', e);
+        parsedLocation = { name: location, latitude: null, longitude: null };
+      }
+    } else if (location) {
+      parsedLocation = location;
+    }
+    
+    if (assignedForeman && typeof assignedForeman === 'string') {
+      try {
+        parsedAssignedForeman = JSON.parse(assignedForeman);
+      } catch (e) {
+        console.error('Error parsing assignedForeman:', e);
+        parsedAssignedForeman = null;
+      }
+    } else if (assignedForeman) {
+      parsedAssignedForeman = assignedForeman;
+    }
+    
     if (!name || !client) {
       return res.status(400).json({ error: 'Missing required fields: name, client' });
     }
@@ -1754,10 +1806,10 @@ app.put('/api/projects/:projectId', authMiddleware, adminOnly, upload.array('ima
     const updateData = {
       name,
       client,
-      location: location || { name: '', latitude: null, longitude: null },
+      location: parsedLocation || { name: '', latitude: null, longitude: null },
       budget: budget || 'KSH 0',
       deadline: deadline || '',
-      assignedForeman: assignedForeman || null,
+      assignedForeman: parsedAssignedForeman || null,
       progress: progress || 0,
       status: (status || 'planning').toLowerCase(),
       category: category || 'Commercial',
