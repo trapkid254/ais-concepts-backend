@@ -1061,21 +1061,14 @@ app.put('/api/admin/site/home', authMiddleware, adminOnly, async (req, res) => {
 // Site Statistics Endpoints
 app.get('/api/statistics', async (req, res) => {
   try {
-    // Get actual counts from database
-    const [projectsCount, clientsCount, employeesCount, teamCount] = await Promise.all([
-      models.EnhancedProject.countDocuments(),
-      models.User.countDocuments({ role: 'client', approvalStatus: 'approved' }),
-      models.User.countDocuments({ role: 'employee', approvalStatus: 'approved' }),
-      models.User.countDocuments({ role: { $in: ['employee', 'foreman', 'admin'] }, approvalStatus: 'approved' })
-    ]);
-
+    // Get statistics from admin settings only
     const doc = await models.SiteStatistics.findOne({ key: 'main' }).lean();
     
     res.json({
-      projectsDone: projectsCount,
-      happyClients: clientsCount,
+      projectsDone: doc?.projectsDone || 150,
+      happyClients: doc?.happyClients || 80,
       yearsExperience: doc?.yearsExperience || 15,
-      teamMembers: teamCount
+      teamMembers: doc?.teamMembers || 25
     });
   } catch (e) {
     console.error(e);
@@ -1357,6 +1350,106 @@ app.post('/api/projects/:projectId/assign-worker', authMiddleware, adminOnly, as
   }
 });
 
+// Assign Employee to Project with Duties
+app.post('/api/projects/:projectId/assign-employee', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const { employeeId, duties } = req.body;
+    const projectId = req.params.projectId;
+    
+    if (!employeeId) {
+      return res.status(400).json({ error: 'Employee ID required' });
+    }
+    
+    const project = await models.EnhancedProject.findById(projectId);
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+    
+    const employee = await models.User.findById(employeeId);
+    if (!employee) {
+      return res.status(404).json({ error: 'Employee not found' });
+    }
+    
+    if (employee.role !== 'employee') {
+      return res.status(400).json({ error: 'User is not an employee' });
+    }
+    
+    // Check if employee is already assigned to this project
+    const existingAssignment = project.assignedEmployees.find(
+      assignment => String(assignment.employeeId) === String(employeeId)
+    );
+    
+    if (existingAssignment) {
+      // Update duties if already assigned
+      existingAssignment.duties = duties || existingAssignment.duties;
+    } else {
+      // Add new assignment
+      project.assignedEmployees.push({
+        employeeId: employee._id,
+        employeeName: employee.name,
+        duties: duties || '',
+        assignedAt: new Date()
+      });
+    }
+    
+    await project.save();
+    
+    // Update employee's assigned projects
+    await models.User.findByIdAndUpdate(employeeId, {
+      $push: { assignedProjects: projectId }
+    });
+    
+    res.json({
+      message: 'Employee assigned to project successfully',
+      project: {
+        id: project._id,
+        name: project.name,
+        assignedEmployees: project.assignedEmployees
+      }
+    });
+  } catch (error) {
+    console.error('Employee assignment error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Remove Employee from Project
+app.delete('/api/projects/:projectId/employees/:employeeId', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const projectId = req.params.projectId;
+    const employeeId = req.params.employeeId;
+    
+    const project = await models.EnhancedProject.findById(projectId);
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+    
+    // Remove employee from project
+    project.assignedEmployees = project.assignedEmployees.filter(
+      assignment => String(assignment.employeeId) !== String(employeeId)
+    );
+    
+    await project.save();
+    
+    // Remove project from employee's assigned projects
+    await models.User.findByIdAndUpdate(employeeId, {
+      $pull: { assignedProjects: projectId }
+    });
+    
+    res.json({
+      message: 'Employee removed from project successfully',
+      project: {
+        id: project._id,
+        name: project.name,
+        assignedEmployees: project.assignedEmployees
+      }
+    });
+  } catch (error) {
+    console.error('Employee removal error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // Attendance Tracking
 app.post('/api/attendance/check-in', authMiddleware, async (req, res) => {
   try {
@@ -1543,7 +1636,7 @@ function parseMoney(val) {
 }
 
 // Create Project
-app.post('/api/projects', authMiddleware, adminOnly, async (req, res) => {
+app.post('/api/projects', authMiddleware, adminOnly, upload.array('images', 10), async (req, res) => {
   try {
     const { 
       name, 
@@ -1582,6 +1675,14 @@ app.post('/api/projects', authMiddleware, adminOnly, async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields: name, client' });
     }
     
+    // Process uploaded images
+    const images = [];
+    if (req.files && req.files.length > 0) {
+      req.files.forEach(file => {
+        images.push(`data:${file.mimetype};base64,${file.buffer.toString('base64')}`);
+      });
+    }
+    
     const project = await models.EnhancedProject.create({
       name,
       client,
@@ -1602,6 +1703,7 @@ app.post('/api/projects', authMiddleware, adminOnly, async (req, res) => {
       moneyUsed: parseMoney(moneyUsed),
       moneyRemaining: parseMoney(moneyRemaining),
       moneyOwed: parseMoney(moneyOwed),
+      images: images,
       createdBy: req.user.sub
     });
     
@@ -1618,7 +1720,7 @@ app.post('/api/projects', authMiddleware, adminOnly, async (req, res) => {
 });
 
 // Update Project
-app.put('/api/projects/:projectId', authMiddleware, adminOnly, async (req, res) => {
+app.put('/api/projects/:projectId', authMiddleware, adminOnly, upload.array('images', 10), async (req, res) => {
   try {
     const projectId = req.params.projectId;
     const { 
@@ -1641,24 +1743,39 @@ app.put('/api/projects/:projectId', authMiddleware, adminOnly, async (req, res) 
       return res.status(400).json({ error: 'Missing required fields: name, client' });
     }
     
+    // Process uploaded images
+    const images = [];
+    if (req.files && req.files.length > 0) {
+      req.files.forEach(file => {
+        images.push(`data:${file.mimetype};base64,${file.buffer.toString('base64')}`);
+      });
+    }
+    
+    const updateData = {
+      name,
+      client,
+      location: location || { name: '', latitude: null, longitude: null },
+      budget: budget || 'KSH 0',
+      deadline: deadline || '',
+      assignedForeman: assignedForeman || null,
+      progress: progress || 0,
+      status: (status || 'planning').toLowerCase(),
+      category: category || 'Commercial',
+      moneyPaid: moneyPaid || '',
+      moneyUsed: moneyUsed || '',
+      moneyRemaining: moneyRemaining || '',
+      moneyOwed: moneyOwed || '',
+      updatedAt: new Date()
+    };
+    
+    // Only update images if new ones were uploaded
+    if (images.length > 0) {
+      updateData.images = images;
+    }
+    
     const project = await models.EnhancedProject.findByIdAndUpdate(
       projectId,
-      {
-        name,
-        client,
-        location: location || { name: '', latitude: null, longitude: null },
-        budget: budget || 'KSH 0',
-        deadline: deadline || '',
-        assignedForeman: assignedForeman || null,
-        progress: progress || 0,
-        status: (status || 'planning').toLowerCase(),
-        category: category || 'Commercial',
-        moneyPaid: moneyPaid || '',
-        moneyUsed: moneyUsed || '',
-        moneyRemaining: moneyRemaining || '',
-        moneyOwed: moneyOwed || '',
-        updatedAt: new Date()
-      },
+      updateData,
       { new: true }
     );
     

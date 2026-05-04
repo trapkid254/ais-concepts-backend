@@ -102,6 +102,13 @@ const enhancedProjectSchema = new mongoose.Schema({
   progress: { type: Number, default: 0 },
   category: { type: String, default: 'Commercial' },
   workers: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Worker' }],
+  images: [{ type: String }], // Array of image URLs
+  assignedEmployees: [{
+    employeeId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    employeeName: { type: String },
+    duties: { type: String },
+    assignedAt: { type: Date, default: Date.now }
+  }],
   // Project creation workflow tracking
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   createdAt: { type: Date, default: Date.now },
