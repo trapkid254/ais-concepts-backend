@@ -1356,6 +1356,8 @@ app.post('/api/projects/:projectId/assign-employee', authMiddleware, adminOnly, 
     const { employeeId, duties } = req.body;
     const projectId = req.params.projectId;
     
+    console.log('Assign employee request:', { employeeId, duties, projectId });
+    
     if (!employeeId) {
       return res.status(400).json({ error: 'Employee ID required' });
     }
@@ -1394,9 +1396,9 @@ app.post('/api/projects/:projectId/assign-employee', authMiddleware, adminOnly, 
     
     await project.save();
     
-    // Update employee's assigned projects
+    // Update employee's assigned projects - use $addToSet to avoid duplicates
     await models.User.findByIdAndUpdate(employeeId, {
-      $push: { assignedProjects: projectId }
+      $addToSet: { assignedProjects: projectId }
     });
     
     res.json({
@@ -1409,7 +1411,12 @@ app.post('/api/projects/:projectId/assign-employee', authMiddleware, adminOnly, 
     });
   } catch (error) {
     console.error('Employee assignment error:', error);
-    res.status(500).json({ error: 'Server error' });
+    console.error('Error details:', {
+      message: error.message,
+      stack: error.stack,
+      name: error.name
+    });
+    res.status(500).json({ error: 'Server error', details: error.message });
   }
 });
 
@@ -1732,6 +1739,14 @@ app.post('/api/projects', authMiddleware, adminOnly, upload.array('images', 10),
       images: images,
       createdBy: req.user.sub
     });
+    
+    // If foreman was assigned, update the foreman's assigned projects
+    if (parsedAssignedForeman?._id || parsedAssignedForeman?.id) {
+      const foremanId = parsedAssignedForeman._id || parsedAssignedForeman.id;
+      await models.User.findByIdAndUpdate(foremanId, {
+        $addToSet: { assignedProjects: project._id }
+      });
+    }
     
     res.json(project);
   } catch (error) {

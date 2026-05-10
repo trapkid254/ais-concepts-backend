@@ -13,7 +13,7 @@ const userSchema = new mongoose.Schema({
   phone: { type: String, default: '' },
   avatar: { type: String, default: '' },
   lastLogin: { type: Date },
-  // Foreman specific fields
+  // Foreman and Employee specific fields
   assignedProjects: [{ type: mongoose.Schema.Types.ObjectId, ref: 'EnhancedProject' }],
   workerAssignments: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Worker' }]
 }, { timestamps: true });
