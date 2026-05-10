@@ -21,7 +21,8 @@ const app = express();
 
 function resolveCorsOrigin() {
   const raw = process.env.CLIENT_ORIGIN;
-  
+  console.log('CLIENT_ORIGIN raw:', raw);
+
   // Always allow localhost origins for development and production
   const allowedOrigins = [
     'http://localhost:5502',
@@ -30,20 +31,24 @@ function resolveCorsOrigin() {
     'http://127.0.0.1:3000',
     'https://aisconcepts.com'
   ];
-  
+
   if (!raw || raw === 'true') {
     // In development, allow localhost origins
+    console.log('Using default allowedOrigins:', allowedOrigins);
     return allowedOrigins;
   }
-  
+
   const parts = raw.split(',').map((s) => s.trim()).filter(Boolean);
   if (parts.length === 0) {
     // If no specific origins configured, allow localhost
+    console.log('Using default allowedOrigins (no parts):', allowedOrigins);
     return allowedOrigins;
   }
-  
+
   // Combine configured origins with localhost
-  return [...parts, ...allowedOrigins];
+  const combined = [...parts, ...allowedOrigins];
+  console.log('Combined allowed origins:', combined);
+  return combined;
 }
 
 app.use(
