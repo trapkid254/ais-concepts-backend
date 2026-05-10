@@ -51,6 +51,25 @@ function resolveCorsOrigin() {
   return combined;
 }
 
+// Manual CORS middleware as fallback
+app.use((req, res, next) => {
+  const allowedOrigins = resolveCorsOrigin();
+  const origin = req.headers.origin;
+  
+  console.log('Manual CORS - origin:', origin, 'allowed:', allowedOrigins);
+  
+  res.setHeader('Access-Control-Allow-Origin', origin || '*');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  
+  next();
+});
+
 app.use(
   cors({
     origin: resolveCorsOrigin(),
@@ -60,13 +79,6 @@ app.use(
     preflightContinue: false
   })
 );
-
-app.options('*', cors({
-  origin: resolveCorsOrigin(),
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
 app.use(cookieParser());
 app.use(express.json({ limit: '12mb' }));
 
