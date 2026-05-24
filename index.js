@@ -471,10 +471,10 @@ app.get('/api/projects', async (req, res) => {
           }).populate('client', 'name email').sort({ createdAt: -1 });
           return res.json(projects);
         }
-        // Employee can see projects they're assigned to
+        // Employee can see projects they're assigned to (via assignedEmployees, not site workers)
         if (decoded.role === 'employee') {
           const projects = await models.EnhancedProject.find({
-            workers: decoded.sub
+            'assignedEmployees.employeeId': decoded.sub
           }).populate('client', 'name email').sort({ createdAt: -1 });
           return res.json(projects);
         }
@@ -1382,63 +1382,131 @@ app.post('/api/projects/:projectId/assign-employee', authMiddleware, adminOnly, 
   try {
     const { employeeId, duties } = req.body;
     const projectId = req.params.projectId;
-    
+
     console.log('Assign employee request:', { employeeId, duties, projectId });
-    
+
     if (!employeeId) {
       return res.status(400).json({ error: 'Employee ID required' });
     }
-    
+    if (!mongoose.Types.ObjectId.isValid(projectId)) {
+      return res.status(400).json({ error: 'Invalid project ID' });
+    }
+    if (!mongoose.Types.ObjectId.isValid(employeeId)) {
+      return res.status(400).json({ error: 'Invalid employee ID' });
+    }
+
     const project = await models.EnhancedProject.findById(projectId);
     if (!project) {
       return res.status(404).json({ error: 'Project not found' });
     }
-    
+
     const employee = await models.User.findById(employeeId);
     if (!employee) {
       return res.status(404).json({ error: 'Employee not found' });
     }
-    
+
     if (employee.role !== 'employee') {
       return res.status(400).json({ error: 'User is not an employee' });
     }
-    
-    // Initialize assignedEmployees array if it doesn't exist
-    if (!project.assignedEmployees) {
-      project.assignedEmployees = [];
-    }
-    
-    // Check if employee is already assigned to this project
-    const existingAssignment = project.assignedEmployees.find(
-      assignment => String(assignment.employeeId) === String(employeeId)
+
+    const assignedList = Array.isArray(project.assignedEmployees) ? project.assignedEmployees : [];
+    const alreadyAssigned = assignedList.some(
+      (a) => a && String(a.employeeId) === String(employeeId)
     );
-    
-    if (existingAssignment) {
-      // Update duties if already assigned
-      existingAssignment.duties = duties || existingAssignment.duties;
+
+    let updatedProject;
+    if (alreadyAssigned) {
+      updatedProject = await models.EnhancedProject.findOneAndUpdate(
+        { _id: projectId, 'assignedEmployees.employeeId': new mongoose.Types.ObjectId(employeeId) },
+        {
+          $set: {
+            'assignedEmployees.$.duties': duties || '',
+            'assignedEmployees.$.employeeName': employee.name || employee.email
+          }
+        },
+        { new: true, runValidators: false }
+      );
+      if (!updatedProject) {
+        updatedProject = await models.EnhancedProject.findById(projectId);
+        const entry = (updatedProject.assignedEmployees || []).find(
+          (a) => String(a.employeeId) === String(employeeId)
+        );
+        if (entry) {
+          entry.duties = duties || entry.duties || '';
+          entry.employeeName = employee.name || employee.email;
+          updatedProject.markModified('assignedEmployees');
+          await updatedProject.save({ validateBeforeSave: false });
+        }
+      }
     } else {
-      // Add new assignment
-      project.assignedEmployees.push({
-        employeeId: employee._id,
-        employeeName: employee.name,
-        duties: duties || '',
-        assignedAt: new Date()
-      });
+      updatedProject = await models.EnhancedProject.findByIdAndUpdate(
+        projectId,
+        {
+          $push: {
+            assignedEmployees: {
+              employeeId: employee._id,
+              employeeName: employee.name || employee.email,
+              duties: duties || '',
+              assignedAt: new Date()
+            }
+          }
+        },
+        { new: true, runValidators: false }
+      );
     }
-    
-    await project.save();
-    
-    // Update employee's assigned projects - use $addToSet to avoid duplicates
+
+    if (!updatedProject) {
+      return res.status(500).json({ error: 'Failed to update project assignment' });
+    }
+
     await models.User.findByIdAndUpdate(employeeId, {
-      $addToSet: { assignedProjects: projectId }
+      $addToSet: { assignedProjects: project._id }
     });
-    
+
+    const deadlineStr = updatedProject.endDate
+      ? new Date(updatedProject.endDate).toISOString().slice(0, 10)
+      : '';
+    let clientEmail = '';
+    try {
+      const clientUser = await models.User.findById(updatedProject.client).lean();
+      clientEmail = clientUser?.email || '';
+    } catch (e) { /* ignore */ }
+
+    const portalState = await models.PortalState.findOne({ key: 'main' });
+    const assignments = portalState?.assignments ? portalState.assignments.slice() : [];
+    const assignmentRow = {
+      project: updatedProject.name,
+      employeeEmail: employee.email,
+      due: deadlineStr,
+      deadline: deadlineStr,
+      notes: duties || '',
+      clientEmail: clientEmail || undefined,
+      projectId: String(updatedProject._id)
+    };
+    const existingIdx = assignments.findIndex(
+      (a) =>
+        a &&
+        String(a.project) === String(updatedProject.name) &&
+        String(a.employeeEmail || '').toLowerCase() === String(employee.email).toLowerCase()
+    );
+    if (existingIdx >= 0) {
+      assignments[existingIdx] = Object.assign({}, assignments[existingIdx], assignmentRow);
+    } else {
+      assignments.push(assignmentRow);
+    }
+    await models.PortalState.findOneAndUpdate(
+      { key: 'main' },
+      { $set: { assignments } },
+      { upsert: true }
+    );
+
     res.json({
       message: 'Employee assigned to project successfully',
+      assignment: assignmentRow,
       project: {
-        id: project._id,
-        name: project.name,
-        assignedEmployees: project.assignedEmployees
+        id: updatedProject._id,
+        name: updatedProject.name,
+        assignedEmployees: updatedProject.assignedEmployees
       }
     });
   } catch (error) {
