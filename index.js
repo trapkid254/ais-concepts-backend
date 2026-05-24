@@ -600,12 +600,65 @@ app.post('/api/newsletter', async (req, res) => {
   }
 });
 
+async function sendWebsiteContactEmail({ name, email, phone, message }) {
+  const to = process.env.CONTACT_TO_EMAIL || 'aisconceptsltd@gmail.com';
+  const subject = `AIS Concepts website inquiry from ${name}`;
+  const text = [
+    `Name: ${name}`,
+    `Email: ${email}`,
+    phone ? `Phone: ${phone}` : '',
+    '',
+    'Message:',
+    message
+  ].filter(Boolean).join('\n');
+
+  if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+    try {
+      const nodemailer = require('nodemailer');
+      const transporter = nodemailer.createTransport({
+        host: process.env.SMTP_HOST,
+        port: parseInt(process.env.SMTP_PORT || '587', 10),
+        secure: process.env.SMTP_SECURE === 'true',
+        auth: {
+          user: process.env.SMTP_USER,
+          pass: process.env.SMTP_PASS
+        }
+      });
+      await transporter.sendMail({
+        from: process.env.SMTP_FROM || process.env.SMTP_USER,
+        to,
+        replyTo: email,
+        subject,
+        text
+      });
+      return true;
+    } catch (mailErr) {
+      console.error('Contact email send failed:', mailErr.message);
+    }
+  }
+  console.log('Contact message saved (configure SMTP_* env to email):', { to, name, email });
+  return false;
+}
+
 app.post('/api/contact', async (req, res) => {
   try {
-    const { name, email, message } = req.body;
-    if (!name || !email || !message) return res.status(400).json({ error: 'Missing fields' });
-    await models.ContactMessage.create({ name, email, message });
-    res.json({ ok: true });
+    const { name, email, phone, message } = req.body;
+    if (!name || !email || !message) {
+      return res.status(400).json({ error: 'Name, email, and message are required.' });
+    }
+    await models.ContactMessage.create({
+      name: String(name).trim(),
+      email: String(email).trim(),
+      phone: phone ? String(phone).trim() : '',
+      message: String(message).trim()
+    });
+    await sendWebsiteContactEmail({
+      name: String(name).trim(),
+      email: String(email).trim(),
+      phone: phone ? String(phone).trim() : '',
+      message: String(message).trim()
+    });
+    res.json({ ok: true, message: 'Thank you. Your message has been received.' });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'Server error' });
@@ -1906,44 +1959,63 @@ app.put('/api/projects/:projectId', authMiddleware, adminOnly, upload.array('ima
       parsedAssignedForeman = assignedForeman;
     }
     
+    const existing = await models.EnhancedProject.findById(projectId);
+    if (!existing) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+
     if (!name || !client) {
       return res.status(400).json({ error: 'Missing required fields: name, client' });
     }
-    
-    // Process uploaded images
+
+    const locName = parsedLocation?.name || parsedLocation?.address || '';
+    const locLat = parsedLocation?.latitude != null && parsedLocation?.latitude !== ''
+      ? parseFloat(parsedLocation.latitude)
+      : (existing.location?.latitude ?? -1.2921);
+    const locLng = parsedLocation?.longitude != null && parsedLocation?.longitude !== ''
+      ? parseFloat(parsedLocation.longitude)
+      : (existing.location?.longitude ?? 36.8219);
+
+    const foremanId = parsedAssignedForeman?._id || parsedAssignedForeman?.id || existing.foremanId || null;
+    const foremanName = parsedAssignedForeman?.name || existing.foremanName || '';
+
     const images = [];
     if (req.files && req.files.length > 0) {
       req.files.forEach(file => {
         images.push(`data:${file.mimetype};base64,${file.buffer.toString('base64')}`);
       });
     }
-    
+
     const updateData = {
       name,
       client,
-      location: parsedLocation || { name: '', latitude: null, longitude: null },
-      budget: budget || 'KSH 0',
-      deadline: deadline || '',
-      assignedForeman: parsedAssignedForeman || null,
-      progress: progress || 0,
-      status: (status || 'planning').toLowerCase(),
-      category: category || 'Commercial',
-      moneyPaid: moneyPaid || '',
-      moneyUsed: moneyUsed || '',
-      moneyRemaining: moneyRemaining || '',
-      moneyOwed: moneyOwed || '',
+      location: {
+        address: locName || existing.location?.address || '',
+        latitude: Number.isFinite(locLat) ? locLat : -1.2921,
+        longitude: Number.isFinite(locLng) ? locLng : 36.8219
+      },
+      budget: parseMoney(budget),
+      endDate: deadline ? new Date(deadline) : existing.endDate,
+      foremanId: foremanId || null,
+      foremanName,
+      progress: parseFloat(progress) || 0,
+      status: (status || existing.status || 'planning').toLowerCase(),
+      category: category || existing.category || 'Commercial',
+      moneyPaid: parseMoney(moneyPaid),
+      moneyUsed: parseMoney(moneyUsed),
+      moneyRemaining: parseMoney(moneyRemaining),
+      moneyOwed: parseMoney(moneyOwed),
       updatedAt: new Date()
     };
-    
-    // Only update images if new ones were uploaded
+
     if (images.length > 0) {
       updateData.images = images;
     }
-    
+
     const project = await models.EnhancedProject.findByIdAndUpdate(
       projectId,
       updateData,
-      { new: true }
+      { new: true, runValidators: true }
     );
     
     if (!project) {
