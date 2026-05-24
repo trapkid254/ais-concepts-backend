@@ -1403,6 +1403,11 @@ app.post('/api/projects/:projectId/assign-employee', authMiddleware, adminOnly, 
       return res.status(400).json({ error: 'User is not an employee' });
     }
     
+    // Initialize assignedEmployees array if it doesn't exist
+    if (!project.assignedEmployees) {
+      project.assignedEmployees = [];
+    }
+    
     // Check if employee is already assigned to this project
     const existingAssignment = project.assignedEmployees.find(
       assignment => String(assignment.employeeId) === String(employeeId)
