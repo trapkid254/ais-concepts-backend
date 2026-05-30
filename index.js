@@ -1205,6 +1205,7 @@ app.get('/api/admin/career-applications', authMiddleware, adminOnly, async (req,
       list.map((a) => {
         const f = a.fields || {};
         return {
+          id: a._id || a.id,
           name: f.name,
           email: f.email,
           phone: f.phone,
@@ -1212,6 +1213,8 @@ app.get('/api/admin/career-applications', authMiddleware, adminOnly, async (req,
           campus: f.campus,
           yearOfStudy: f.yearOfStudy,
           message: f.message,
+          certificates: f.certificates || [],
+          resume: f.resume || null,
           date: a.createdAt
         };
       })
