@@ -1225,6 +1225,18 @@ app.get('/api/admin/career-applications', authMiddleware, adminOnly, async (req,
   }
 });
 
+app.delete('/api/admin/career-applications/:id', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const removed = await models.CareerApplication.findByIdAndDelete(id);
+    if (!removed) return res.status(404).json({ error: 'Application not found' });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/ais_concepts';
 
