@@ -80,7 +80,7 @@ app.use(
   })
 );
 app.use(cookieParser());
-app.use(express.json({ limit: '12mb' }));
+app.use(express.json({ limit: '50mb' }));
 
 const root = path.join(__dirname, '../frontend');
 app.use(express.static(root));
