@@ -485,23 +485,35 @@ app.get('/api/projects', async (req, res) => {
 
     // Public: return website portfolio projects
     const list = await models.WebsiteProject.find().sort({ sortOrder: 1, title: 1 }).lean();
-    const mapped = list.map((p, i) => ({
-      id: p._id,
-      slug: p.slug,
-      title: p.title,
-      category: p.category,
-      categorySecondary: p.categorySecondary,
-      image: p.image,
-      heroImage: p.heroImage || p.image,
-      description: p.description,
-      conceptSketches: p.conceptSketches || [],
-      siteAnalysis: p.siteAnalysis || [],
-      floorPlans: p.floorPlans || [],
-      renderings: p.renderings || [],
-      constructionPhotos: p.constructionPhotos || [],
-      completedPhotos: p.completedPhotos || [],
-      metrics: p.metrics || {}
-    }));
+    const mapped = list.map((p, i) => {
+      // Prepare metrics - only include if values exist
+      const metrics = {};
+      if (p.metrics && typeof p.metrics === 'object') {
+        if (p.metrics.costEfficiency != null) metrics.costEfficiency = p.metrics.costEfficiency;
+        if (p.metrics.sustainability != null) metrics.sustainability = p.metrics.sustainability;
+        if (p.metrics.innovation != null) metrics.innovation = p.metrics.innovation;
+      }
+      
+      return {
+        id: p._id,
+        slug: p.slug,
+        title: p.title,
+        category: p.category,
+        categorySecondary: p.categorySecondary,
+        image: p.image,
+        heroImage: p.heroImage || p.image,
+        projectImages: p.projectImages || [p.image].filter(Boolean),
+        description: p.description,
+        conceptSketches: p.conceptSketches || [],
+        siteAnalysis: p.siteAnalysis || [],
+        floorPlans: p.floorPlans || [],
+        renderings: p.renderings || [],
+        constructionPhotos: p.constructionPhotos || [],
+        completedPhotos: p.completedPhotos || [],
+        metrics: metrics,
+        hasMetrics: Object.keys(metrics).length > 0
+      };
+    });
     res.json(mapped);
   } catch (e) {
     console.error(e);
@@ -513,6 +525,15 @@ app.get('/api/projects/detail/:slug', async (req, res) => {
   try {
     const p = await models.WebsiteProject.findOne({ slug: req.params.slug }).lean();
     if (!p) return res.status(404).json({ error: 'Not found' });
+    
+    // Prepare metrics - only include if values exist
+    const metrics = {};
+    if (p.metrics && typeof p.metrics === 'object') {
+      if (p.metrics.costEfficiency != null) metrics.costEfficiency = p.metrics.costEfficiency;
+      if (p.metrics.sustainability != null) metrics.sustainability = p.metrics.sustainability;
+      if (p.metrics.innovation != null) metrics.innovation = p.metrics.innovation;
+    }
+    
     res.json({
       id: p._id,
       slug: p.slug,
@@ -521,6 +542,7 @@ app.get('/api/projects/detail/:slug', async (req, res) => {
       categorySecondary: p.categorySecondary,
       image: p.image,
       heroImage: p.heroImage || p.image,
+      projectImages: p.projectImages || [p.image].filter(Boolean),
       description: p.description,
       conceptSketches: p.conceptSketches || [],
       siteAnalysis: p.siteAnalysis || [],
@@ -528,7 +550,8 @@ app.get('/api/projects/detail/:slug', async (req, res) => {
       renderings: p.renderings || [],
       constructionPhotos: p.constructionPhotos || [],
       completedPhotos: p.completedPhotos || [],
-      metrics: p.metrics || {}
+      metrics: metrics,
+      hasMetrics: Object.keys(metrics).length > 0
     });
   } catch (e) {
     console.error(e);
@@ -693,7 +716,31 @@ app.post('/api/enquiries', upload.single('file'), async (req, res) => {
 
 app.post('/api/careers/apply', async (req, res) => {
   try {
-    await models.CareerApplication.create({ fields: req.body });
+    const { resume, portfolioType, portfolioPhotos, portfolioUrl, portfolioPdf } = req.body;
+    
+    // CV/Resume is now mandatory
+    if (!resume) {
+      return res.status(400).json({ error: 'CV/Resume is required for career applications.' });
+    }
+    
+    // Prepare portfolio data
+    const portfolio = {};
+    if (portfolioType === 'photos' && portfolioPhotos && portfolioPhotos.length > 0) {
+      portfolio.type = 'photos';
+      portfolio.photos = portfolioPhotos.slice(0, 10); // Max 10 photos
+    } else if (portfolioType === 'url' && portfolioUrl) {
+      portfolio.type = 'url';
+      portfolio.url = portfolioUrl;
+    } else if (portfolioType === 'pdf' && portfolioPdf) {
+      portfolio.type = 'pdf';
+      portfolio.pdf = portfolioPdf;
+    }
+    
+    await models.CareerApplication.create({ 
+      fields: req.body,
+      portfolio: portfolio,
+      resume: resume
+    });
     res.json({ ok: true });
   } catch (e) {
     console.error(e);
@@ -1061,6 +1108,23 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
     await models.WebsiteProject.deleteMany({});
     for (let i = 0; i < arr.length; i++) {
       const p = arr[i];
+      
+      // Use projectImages if provided, otherwise fall back to image
+      let projectImages = [];
+      if (Array.isArray(p.projectImages) && p.projectImages.length > 0) {
+        projectImages = p.projectImages;
+      } else if (p.image) {
+        projectImages = [p.image];
+      }
+      
+      // Parse metrics - only include if values are provided
+      let metrics = {};
+      if (p.metrics) {
+        if (p.metrics.costEfficiency != null) metrics.costEfficiency = p.metrics.costEfficiency;
+        if (p.metrics.sustainability != null) metrics.sustainability = p.metrics.sustainability;
+        if (p.metrics.innovation != null) metrics.innovation = p.metrics.innovation;
+      }
+      
       await models.WebsiteProject.create({
         slug:
           p.slug ||
@@ -1073,8 +1137,9 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
         title: p.title,
         category: p.category,
         categorySecondary: p.categorySecondary || '',
-        image: p.image,
-        heroImage: p.heroImage || p.image,
+        image: projectImages[0] || p.image || '',
+        heroImage: p.heroImage || projectImages[0] || p.image || '',
+        projectImages: projectImages,
         description: p.description || '',
         conceptSketches: p.conceptSketches || [],
         siteAnalysis: p.siteAnalysis || [],
@@ -1082,7 +1147,7 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
         renderings: p.renderings || [],
         constructionPhotos: p.constructionPhotos || [],
         completedPhotos: p.completedPhotos || [],
-        metrics: p.metrics || {},
+        metrics: metrics,
         sortOrder: i
       });
     }

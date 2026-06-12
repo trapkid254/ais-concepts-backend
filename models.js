@@ -25,6 +25,7 @@ const websiteProjectSchema = new mongoose.Schema({
   categorySecondary: { type: String, default: '' },
   image: { type: String, default: '' },
   heroImage: { type: String, default: '' },
+  projectImages: [{ type: String }], // Multiple images: first is main/featured on public site
   description: { type: String, default: '' },
   conceptSketches: [{ type: String }],
   siteAnalysis: [{ type: String }],
@@ -37,7 +38,9 @@ const websiteProjectSchema = new mongoose.Schema({
     sustainability: { type: Number, min: 0, max: 100 },
     innovation: { type: Number, min: 0, max: 100 }
   },
-  sortOrder: { type: Number, default: 0 }
+  sortOrder: { type: Number, default: 0 },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
 });
 
 const websiteServiceSchema = new mongoose.Schema({
@@ -192,6 +195,13 @@ const projectEnquirySchema = new mongoose.Schema({
 
 const careerApplicationSchema = new mongoose.Schema({
   fields: mongoose.Schema.Types.Mixed,
+  portfolio: {
+    type: { type: String, enum: ['photos', 'url', 'pdf'], default: 'photos' },
+    photos: [{ type: String }], // Max 10 photos of projects done
+    url: { type: String, default: '' },
+    pdf: { type: String, default: '' }
+  },
+  resume: { type: String, default: '' }, // Now mandatory
   createdAt: { type: Date, default: Date.now }
 });
 
