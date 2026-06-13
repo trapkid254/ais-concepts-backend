@@ -1155,15 +1155,19 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
       }
       
       try {
+        // Generate unique slug
+        let generatedSlug = p.slug ||
+          String(p.title || 'project')
+            .toLowerCase()
+            .replace(/\s+/g, '-')
+            .replace(/[^a-z0-9-]/g, '') +
+            '-' +
+            (i + 1);
+        
+        console.log(`Project ${i}: Generated slug: ${generatedSlug}`);
+        
         await models.WebsiteProject.create({
-          slug:
-            p.slug ||
-            String(p.title || 'project')
-              .toLowerCase()
-              .replace(/\s+/g, '-')
-              .replace(/[^a-z0-9-]/g, '') +
-              '-' +
-              (i + 1),
+          slug: generatedSlug,
           title: p.title,
           category: p.category,
           categorySecondary: p.categorySecondary || '',
@@ -1182,7 +1186,10 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
         });
         console.log(`Project ${i + 1}/${arr.length} saved successfully`);
       } catch (createError) {
-        console.error(`Error saving project ${i}:`, createError.message);
+        console.error(`Error saving project ${i}:`, createError.message, createError.code);
+        if (createError.code === 11000) {
+          throw new Error(`Duplicate slug for project "${p.title}". Please ensure each project has a unique title.`);
+        }
         throw new Error(`Failed to save project "${p.title}": ${createError.message}`);
       }
     }
