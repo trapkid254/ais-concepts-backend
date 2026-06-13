@@ -10,6 +10,7 @@ const multer = require('multer');
 const crypto = require('crypto');
 const cookieParser = require('cookie-parser');
 const { Server } = require('socket.io');
+const BSON = require('bson');
 
 const { signToken, authMiddleware } = require('./auth');
 const models = require('./models');
@@ -1117,6 +1118,54 @@ app.get('/api/user/profile', authMiddleware, requireApprovedAccount, async (req,
   res.json(p || {});
 });
 
+app.get('/api/admin/projects/estimate-size', authMiddleware, adminOnly, (req, res) => {
+  try {
+    // Estimate BSON size of a minimal project document (no images)
+    const minimalProject = {
+      slug: 'test-project-1',
+      title: 'Test Project',
+      category: 'Commercial',
+      categorySecondary: 'Interior',
+      image: '',
+      heroImage: '',
+      projectImages: [],
+      description: 'Sample description for a project.',
+      conceptSketches: [],
+      siteAnalysis: [],
+      floorPlans: [],
+      renderings: [],
+      constructionPhotos: [],
+      completedPhotos: [],
+      metrics: { costEfficiency: 80, sustainability: 75, innovation: 90 },
+      sortOrder: 0,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+    
+    const BSON = require('bson');
+    const minimalBson = BSON.serialize(minimalProject);
+    const minimalSize = minimalBson.length;
+    
+    const MONGODB_16MB_LIMIT = 16 * 1024 * 1024;
+    const SAFETY_MARGIN = 0.5 * 1024 * 1024; // 500KB buffer for metadata growth
+    const MAX_IMAGE_SIZE = MONGODB_16MB_LIMIT - minimalSize - SAFETY_MARGIN;
+    
+    res.json({
+      minimalDocumentBsonSize: minimalSize,
+      minimalDocumentSizeMB: (minimalSize / 1024 / 1024).toFixed(3),
+      mongoDbLimit: MONGODB_16MB_LIMIT,
+      mongoDbLimitMB: (MONGODB_16MB_LIMIT / 1024 / 1024).toFixed(1),
+      safetyMargin: SAFETY_MARGIN,
+      safetyMarginMB: (SAFETY_MARGIN / 1024 / 1024).toFixed(1),
+      recommendedMaxImageSize: MAX_IMAGE_SIZE,
+      recommendedMaxImageSizeMB: (MAX_IMAGE_SIZE / 1024 / 1024).toFixed(1)
+    });
+  } catch (e) {
+    console.error('Error estimating size:', e.message);
+    res.status(500).json({ error: 'Could not estimate size', details: e.message });
+  }
+});
+
 app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
   try {
     console.log('========================================');
@@ -1140,8 +1189,12 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
     });
     
     // Validate all incoming projects before making destructive DB changes
-    // MongoDB has a 16MB document limit; use 3MB per-project to stay safe with multiple images + metadata
-    const MAX_PROJECT_IMAGE_CHARS = 3 * 1024 * 1024; // 3MB per-project image data threshold
+    // Calculate dynamic limit based on minimal project document size
+    const MONGODB_16MB_LIMIT = 16 * 1024 * 1024;
+    const SAFETY_MARGIN = 0.5 * 1024 * 1024; // 500KB buffer
+    const MAX_PROJECT_IMAGE_CHARS = MONGODB_16MB_LIMIT - (50 * 1024) - SAFETY_MARGIN; // Estimate ~50KB per project metadata
+    console.log(`📊 Using dynamic image limit: ${(MAX_PROJECT_IMAGE_CHARS / 1024 / 1024).toFixed(1)} MB per project`);
+    
     for (let i = 0; i < arr.length; i++) {
       const p = arr[i];
       if (!p.title || !p.category) {
@@ -1154,7 +1207,7 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
         if (typeof img === 'string') totalImageSize += img.length;
       });
       if (totalImageSize > MAX_PROJECT_IMAGE_CHARS) {
-        return res.status(400).json({ error: 'image_too_large', details: `Project "${p.title}" image data exceeds 3 MB limit (${(totalImageSize / 1024 / 1024).toFixed(2)} MB total). Try using fewer or smaller images per project.` });
+        return res.status(400).json({ error: 'image_too_large', details: `Project "${p.title}" image data exceeds limit (${(totalImageSize / 1024 / 1024).toFixed(2)} MB). Maximum allowed is ~${(MAX_PROJECT_IMAGE_CHARS / 1024 / 1024).toFixed(1)} MB per project.` });
       }
     }
 
