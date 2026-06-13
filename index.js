@@ -1189,11 +1189,9 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
     });
     
     // Validate all incoming projects before making destructive DB changes
-    // Calculate dynamic limit based on minimal project document size
-    const MONGODB_16MB_LIMIT = 16 * 1024 * 1024;
-    const SAFETY_MARGIN = 0.5 * 1024 * 1024; // 500KB buffer
-    const MAX_PROJECT_IMAGE_CHARS = MONGODB_16MB_LIMIT - (50 * 1024) - SAFETY_MARGIN; // Estimate ~50KB per project metadata
-    console.log(`📊 Using dynamic image limit: ${(MAX_PROJECT_IMAGE_CHARS / 1024 / 1024).toFixed(1)} MB per project`);
+    // Use conservative 12MB limit to account for BSON overhead and ensure safety
+    const MAX_PROJECT_IMAGE_CHARS = 12 * 1024 * 1024; // 12MB per project (conservative)
+    console.log(`📊 Using conservative image limit: 12 MB per project`);
     
     for (let i = 0; i < arr.length; i++) {
       const p = arr[i];
@@ -1258,7 +1256,8 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
 
         console.log(`   Slug: ${generatedSlug}`);
 
-        const savedProject = await models.WebsiteProject.create({
+        // Calculate exact BSON size before attempting to save
+        const docToSave = {
           slug: generatedSlug,
           title: p.title,
           category: p.category,
@@ -1275,7 +1274,17 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
           completedPhotos: p.completedPhotos || [],
           metrics: metrics,
           sortOrder: i
-        });
+        };
+        
+        const bsonBytes = BSON.serialize(docToSave).length;
+        const bsonMB = (bsonBytes / 1024 / 1024).toFixed(2);
+        console.log(`   📦 Exact BSON size: ${bsonBytes} bytes (~${bsonMB} MB)`);
+        
+        if (bsonBytes > 16 * 1024 * 1024) {
+          throw new Error(`Document size exceeds 16 MB limit (${bsonMB} MB). This includes all metadata, images, and arrays.`);
+        }
+
+        const savedProject = await models.WebsiteProject.create(docToSave);
 
         // Verify what was saved
         console.log(`   ✅ Project saved with projectImages count: ${savedProject.projectImages.length}`);
