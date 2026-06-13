@@ -1104,10 +1104,17 @@ app.get('/api/user/profile', authMiddleware, requireApprovedAccount, async (req,
 
 app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
   try {
+    console.log('PUT /api/admin/projects - Request received');
+    console.log('Request body size:', JSON.stringify(req.body).length, 'characters');
+    
     const arr = Array.isArray(req.body) ? req.body : [];
+    console.log('Number of projects to save:', arr.length);
+    
     await models.WebsiteProject.deleteMany({});
+    
     for (let i = 0; i < arr.length; i++) {
       const p = arr[i];
+      console.log(`Processing project ${i + 1}/${arr.length}:`, p.title);
       
       // Validate required fields
       if (!p.title || !p.category) {
@@ -1118,8 +1125,25 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
       let projectImages = [];
       if (Array.isArray(p.projectImages) && p.projectImages.length > 0) {
         projectImages = p.projectImages;
+        console.log(`Project ${i} has ${projectImages.length} images`);
+        
+        // Check total size of images
+        let totalImageSize = 0;
+        projectImages.forEach((img, idx) => {
+          if (typeof img === 'string') {
+            totalImageSize += img.length;
+            console.log(`  Image ${idx + 1} size: ${img.length} characters`);
+          }
+        });
+        console.log(`Total image data size: ${totalImageSize} characters (~${(totalImageSize / 1024 / 1024).toFixed(2)} MB)`);
+        
+        // Warn if images are too large
+        if (totalImageSize > 10 * 1024 * 1024) { // 10MB warning threshold
+          console.warn(`WARNING: Project ${i} has very large images (${(totalImageSize / 1024 / 1024).toFixed(2)} MB). This may cause issues.`);
+        }
       } else if (p.image) {
         projectImages = [p.image];
+        console.log(`Project ${i} using fallback image`);
       }
       
       // Parse metrics - only include if values are provided
@@ -1130,32 +1154,39 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
         if (p.metrics.innovation != null) metrics.innovation = p.metrics.innovation;
       }
       
-      await models.WebsiteProject.create({
-        slug:
-          p.slug ||
-          String(p.title || 'project')
-            .toLowerCase()
-            .replace(/\s+/g, '-')
-            .replace(/[^a-z0-9-]/g, '') +
-            '-' +
-            (i + 1),
-        title: p.title,
-        category: p.category,
-        categorySecondary: p.categorySecondary || '',
-        image: projectImages[0] || p.image || '',
-        heroImage: p.heroImage || projectImages[0] || p.image || '',
-        projectImages: projectImages,
-        description: p.description || '',
-        conceptSketches: p.conceptSketches || [],
-        siteAnalysis: p.siteAnalysis || [],
-        floorPlans: p.floorPlans || [],
-        renderings: p.renderings || [],
-        constructionPhotos: p.constructionPhotos || [],
-        completedPhotos: p.completedPhotos || [],
-        metrics: metrics,
-        sortOrder: i
-      });
+      try {
+        await models.WebsiteProject.create({
+          slug:
+            p.slug ||
+            String(p.title || 'project')
+              .toLowerCase()
+              .replace(/\s+/g, '-')
+              .replace(/[^a-z0-9-]/g, '') +
+              '-' +
+              (i + 1),
+          title: p.title,
+          category: p.category,
+          categorySecondary: p.categorySecondary || '',
+          image: projectImages[0] || p.image || '',
+          heroImage: p.heroImage || projectImages[0] || p.image || '',
+          projectImages: projectImages,
+          description: p.description || '',
+          conceptSketches: p.conceptSketches || [],
+          siteAnalysis: p.siteAnalysis || [],
+          floorPlans: p.floorPlans || [],
+          renderings: p.renderings || [],
+          constructionPhotos: p.constructionPhotos || [],
+          completedPhotos: p.completedPhotos || [],
+          metrics: metrics,
+          sortOrder: i
+        });
+        console.log(`Project ${i + 1}/${arr.length} saved successfully`);
+      } catch (createError) {
+        console.error(`Error saving project ${i}:`, createError.message);
+        throw new Error(`Failed to save project "${p.title}": ${createError.message}`);
+      }
     }
+    console.log('All projects saved successfully');
     res.json({ ok: true });
   } catch (e) {
     console.error('Error in PUT /api/admin/projects:', e);
