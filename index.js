@@ -1109,6 +1109,11 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
     for (let i = 0; i < arr.length; i++) {
       const p = arr[i];
       
+      // Validate required fields
+      if (!p.title || !p.category) {
+        throw new Error(`Project ${i} missing required fields: title and/or category`);
+      }
+      
       // Use projectImages if provided, otherwise fall back to image
       let projectImages = [];
       if (Array.isArray(p.projectImages) && p.projectImages.length > 0) {
@@ -1153,8 +1158,8 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
     }
     res.json({ ok: true });
   } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'Server error' });
+    console.error('Error in PUT /api/admin/projects:', e);
+    res.status(500).json({ error: 'Server error', details: e.message });
   }
 });
 
