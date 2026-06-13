@@ -1140,7 +1140,8 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
     });
     
     // Validate all incoming projects before making destructive DB changes
-    const MAX_PROJECT_IMAGE_CHARS = 10 * 1024 * 1024; // 10MB per-project image data threshold
+    // MongoDB has a 16MB document limit; use 3MB per-project to stay safe with multiple images + metadata
+    const MAX_PROJECT_IMAGE_CHARS = 3 * 1024 * 1024; // 3MB per-project image data threshold
     for (let i = 0; i < arr.length; i++) {
       const p = arr[i];
       if (!p.title || !p.category) {
@@ -1153,7 +1154,7 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
         if (typeof img === 'string') totalImageSize += img.length;
       });
       if (totalImageSize > MAX_PROJECT_IMAGE_CHARS) {
-        return res.status(400).json({ error: 'image_too_large', details: `Project "${p.title}" image data is too large (${(totalImageSize / 1024 / 1024).toFixed(2)} MB). Maximum allowed is ${(MAX_PROJECT_IMAGE_CHARS / 1024 / 1024)} MB.` });
+        return res.status(400).json({ error: 'image_too_large', details: `Project "${p.title}" image data exceeds 3 MB limit (${(totalImageSize / 1024 / 1024).toFixed(2)} MB total). Try using fewer or smaller images per project.` });
       }
     }
 
