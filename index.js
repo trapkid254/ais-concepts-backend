@@ -523,8 +523,20 @@ app.get('/api/projects', async (req, res) => {
 
 app.get('/api/projects/detail/:slug', async (req, res) => {
   try {
+    console.log(`\n📥 GET /api/projects/detail/${req.params.slug}`);
     const p = await models.WebsiteProject.findOne({ slug: req.params.slug }).lean();
-    if (!p) return res.status(404).json({ error: 'Not found' });
+    if (!p) {
+      console.log('❌ Project not found');
+      return res.status(404).json({ error: 'Not found' });
+    }
+    
+    console.log(`✓ Found project: "${p.title}"`);
+    console.log(`  projectImages in DB: ${p.projectImages ? p.projectImages.length + ' images' : 'MISSING'}`);
+    if (p.projectImages && p.projectImages.length > 0) {
+      p.projectImages.forEach((img, i) => {
+        console.log(`    Image ${i + 1}: ${img.substring(0, 40)}... (${img.length} chars)`);
+      });
+    }
     
     // Prepare metrics - only include if values exist
     const metrics = {};
@@ -534,8 +546,7 @@ app.get('/api/projects/detail/:slug', async (req, res) => {
       if (p.metrics.innovation != null) metrics.innovation = p.metrics.innovation;
     }
     
-    console.log('Returning project detail:', p.title, 'with', Array.isArray(p.projectImages) ? p.projectImages.length : 0, 'images');
-    res.json({
+    const response = {
       id: p._id,
       slug: p.slug,
       title: p.title,
@@ -553,10 +564,13 @@ app.get('/api/projects/detail/:slug', async (req, res) => {
       completedPhotos: p.completedPhotos || [],
       metrics: metrics,
       hasMetrics: Object.keys(metrics).length > 0
-    });
+    };
+    
+    console.log(`📤 Returning ${response.projectImages.length} images to client`);
+    res.json(response);
   } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'Server error' });
+    console.error('❌ Error fetching project detail:', e.message);
+    res.status(500).json({ error: 'Server error', details: e.message });
   }
 });
 
@@ -1105,17 +1119,31 @@ app.get('/api/user/profile', authMiddleware, requireApprovedAccount, async (req,
 
 app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
   try {
+    console.log('========================================');
     console.log('PUT /api/admin/projects - Request received');
-    console.log('Request body size:', JSON.stringify(req.body).length, 'characters');
+    console.log('========================================');
+    const bodyStr = JSON.stringify(req.body);
+    console.log('Request body size:', bodyStr.length, 'characters (~' + (bodyStr.length / 1024 / 1024).toFixed(2) + ' MB)');
     
     const arr = Array.isArray(req.body) ? req.body : [];
     console.log('Number of projects to save:', arr.length);
+    
+    arr.forEach(function(proj, idx) {
+      console.log(`\n📦 Project ${idx + 1}: "${proj.title}"`);
+      console.log(`   Category: ${proj.category}`);
+      console.log(`   ProjectImages count: ${proj.projectImages ? proj.projectImages.length : 'MISSING'}`);
+      if (proj.projectImages && proj.projectImages.length > 0) {
+        proj.projectImages.forEach(function(img, imgIdx) {
+          console.log(`     Image ${imgIdx + 1}: ${img.substring(0, 30)}... (${img.length} chars)`);
+        });
+      }
+    });
     
     await models.WebsiteProject.deleteMany({});
     
     for (let i = 0; i < arr.length; i++) {
       const p = arr[i];
-      console.log(`Processing project ${i + 1}/${arr.length}:`, p.title);
+      console.log(`\n➡️ Processing project ${i + 1}/${arr.length}: "${p.title}"`);
       
       // Validate required fields
       if (!p.title || !p.category) {
@@ -1126,25 +1154,27 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
       let projectImages = [];
       if (Array.isArray(p.projectImages) && p.projectImages.length > 0) {
         projectImages = p.projectImages;
-        console.log(`Project ${i} has ${projectImages.length} images`);
+        console.log(`   ✓ Has projectImages array with ${projectImages.length} images`);
         
         // Check total size of images
         let totalImageSize = 0;
         projectImages.forEach((img, idx) => {
           if (typeof img === 'string') {
             totalImageSize += img.length;
-            console.log(`  Image ${idx + 1} size: ${img.length} characters`);
+            console.log(`     Image ${idx + 1}: ${img.substring(0, 30)}... (${img.length} chars)`);
           }
         });
-        console.log(`Total image data size: ${totalImageSize} characters (~${(totalImageSize / 1024 / 1024).toFixed(2)} MB)`);
+        console.log(`   Total image data size: ${totalImageSize} characters (~${(totalImageSize / 1024 / 1024).toFixed(2)} MB)`);
         
         // Warn if images are too large
         if (totalImageSize > 10 * 1024 * 1024) { // 10MB warning threshold
-          console.warn(`WARNING: Project ${i} has very large images (${(totalImageSize / 1024 / 1024).toFixed(2)} MB). This may cause issues.`);
+          console.warn(`   ⚠️ WARNING: Very large images (${(totalImageSize / 1024 / 1024).toFixed(2)} MB). This may cause issues.`);
         }
       } else if (p.image) {
         projectImages = [p.image];
-        console.log(`Project ${i} using fallback image`);
+        console.log(`   ℹ️ Using fallback image field`);
+      } else {
+        console.log(`   ⚠️ No projectImages and no fallback image!`);
       }
       
       // Parse metrics - only include if values are provided
@@ -1165,9 +1195,9 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
             '-' +
             (i + 1);
         
-        console.log(`Project ${i}: Generated slug: ${generatedSlug}`);
+        console.log(`   Slug: ${generatedSlug}`);
         
-        await models.WebsiteProject.create({
+        const savedProject = await models.WebsiteProject.create({
           slug: generatedSlug,
           title: p.title,
           category: p.category,
@@ -1185,19 +1215,22 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
           metrics: metrics,
           sortOrder: i
         });
-        console.log(`Project ${i + 1}/${arr.length} saved successfully`);
+        
+        // Verify what was saved
+        console.log(`   ✅ Project saved with projectImages count: ${savedProject.projectImages.length}`);
       } catch (createError) {
-        console.error(`Error saving project ${i}:`, createError.message, createError.code);
+        console.error(`❌ Error saving project ${i}:`, createError.message, createError.code);
         if (createError.code === 11000) {
           throw new Error(`Duplicate slug for project "${p.title}". Please ensure each project has a unique title.`);
         }
         throw new Error(`Failed to save project "${p.title}": ${createError.message}`);
       }
     }
-    console.log('All projects saved successfully');
+    console.log('\n✅ All projects saved successfully');
+    console.log('========================================\n');
     res.json({ ok: true });
   } catch (e) {
-    console.error('Error in PUT /api/admin/projects:', e);
+    console.error('❌ Error in PUT /api/admin/projects:', e);
     res.status(500).json({ error: 'Server error', details: e.message });
   }
 });
