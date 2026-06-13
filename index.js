@@ -1139,24 +1139,36 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
       }
     });
     
+    // Validate all incoming projects before making destructive DB changes
+    const MAX_PROJECT_IMAGE_CHARS = 10 * 1024 * 1024; // 10MB per-project image data threshold
+    for (let i = 0; i < arr.length; i++) {
+      const p = arr[i];
+      if (!p.title || !p.category) {
+        return res.status(400).json({ error: 'validation_error', details: `Project at index ${i} missing required fields: title and/or category` });
+      }
+
+      const projectImages = Array.isArray(p.projectImages) && p.projectImages.length > 0 ? p.projectImages : (p.image ? [p.image] : []);
+      let totalImageSize = 0;
+      projectImages.forEach((img) => {
+        if (typeof img === 'string') totalImageSize += img.length;
+      });
+      if (totalImageSize > MAX_PROJECT_IMAGE_CHARS) {
+        return res.status(400).json({ error: 'image_too_large', details: `Project "${p.title}" image data is too large (${(totalImageSize / 1024 / 1024).toFixed(2)} MB). Maximum allowed is ${(MAX_PROJECT_IMAGE_CHARS / 1024 / 1024)} MB.` });
+      }
+    }
+
+    // All validation passed — safe to delete existing documents and recreate
     await models.WebsiteProject.deleteMany({});
-    
+
     for (let i = 0; i < arr.length; i++) {
       const p = arr[i];
       console.log(`\n➡️ Processing project ${i + 1}/${arr.length}: "${p.title}"`);
-      
-      // Validate required fields
-      if (!p.title || !p.category) {
-        throw new Error(`Project ${i} missing required fields: title and/or category`);
-      }
-      
+
       // Use projectImages if provided, otherwise fall back to image
       let projectImages = [];
       if (Array.isArray(p.projectImages) && p.projectImages.length > 0) {
         projectImages = p.projectImages;
         console.log(`   ✓ Has projectImages array with ${projectImages.length} images`);
-        
-        // Check total size of images
         let totalImageSize = 0;
         projectImages.forEach((img, idx) => {
           if (typeof img === 'string') {
@@ -1165,18 +1177,13 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
           }
         });
         console.log(`   Total image data size: ${totalImageSize} characters (~${(totalImageSize / 1024 / 1024).toFixed(2)} MB)`);
-        
-        // Warn if images are too large
-        if (totalImageSize > 10 * 1024 * 1024) { // 10MB warning threshold
-          console.warn(`   ⚠️ WARNING: Very large images (${(totalImageSize / 1024 / 1024).toFixed(2)} MB). This may cause issues.`);
-        }
       } else if (p.image) {
         projectImages = [p.image];
         console.log(`   ℹ️ Using fallback image field`);
       } else {
         console.log(`   ⚠️ No projectImages and no fallback image!`);
       }
-      
+
       // Parse metrics - only include if values are provided
       let metrics = {};
       if (p.metrics) {
@@ -1184,7 +1191,7 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
         if (p.metrics.sustainability != null) metrics.sustainability = p.metrics.sustainability;
         if (p.metrics.innovation != null) metrics.innovation = p.metrics.innovation;
       }
-      
+
       try {
         // Generate unique slug
         let generatedSlug = p.slug ||
@@ -1194,9 +1201,9 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
             .replace(/[^a-z0-9-]/g, '') +
             '-' +
             (i + 1);
-        
+
         console.log(`   Slug: ${generatedSlug}`);
-        
+
         const savedProject = await models.WebsiteProject.create({
           slug: generatedSlug,
           title: p.title,
@@ -1215,7 +1222,7 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
           metrics: metrics,
           sortOrder: i
         });
-        
+
         // Verify what was saved
         console.log(`   ✅ Project saved with projectImages count: ${savedProject.projectImages.length}`);
       } catch (createError) {
