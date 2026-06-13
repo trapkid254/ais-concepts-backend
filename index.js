@@ -502,7 +502,7 @@ app.get('/api/projects', async (req, res) => {
         categorySecondary: p.categorySecondary,
         image: p.image,
         heroImage: p.heroImage || p.image,
-        projectImages: p.projectImages || [p.image].filter(Boolean),
+        projectImages: (Array.isArray(p.projectImages) && p.projectImages.length > 0) ? p.projectImages : (p.image ? [p.image] : []),
         description: p.description,
         conceptSketches: p.conceptSketches || [],
         siteAnalysis: p.siteAnalysis || [],
@@ -534,6 +534,7 @@ app.get('/api/projects/detail/:slug', async (req, res) => {
       if (p.metrics.innovation != null) metrics.innovation = p.metrics.innovation;
     }
     
+    console.log('Returning project detail:', p.title, 'with', Array.isArray(p.projectImages) ? p.projectImages.length : 0, 'images');
     res.json({
       id: p._id,
       slug: p.slug,
@@ -542,7 +543,7 @@ app.get('/api/projects/detail/:slug', async (req, res) => {
       categorySecondary: p.categorySecondary,
       image: p.image,
       heroImage: p.heroImage || p.image,
-      projectImages: p.projectImages || [p.image].filter(Boolean),
+      projectImages: (Array.isArray(p.projectImages) && p.projectImages.length > 0) ? p.projectImages : (p.image ? [p.image] : []),
       description: p.description,
       conceptSketches: p.conceptSketches || [],
       siteAnalysis: p.siteAnalysis || [],
@@ -1308,7 +1309,9 @@ app.get('/api/admin/enquiries', authMiddleware, adminOnly, async (req, res) => {
 
 app.get('/api/admin/career-applications', authMiddleware, adminOnly, async (req, res) => {
   try {
+    console.log('Fetching career applications...');
     const list = await models.CareerApplication.find().sort({ createdAt: -1 }).lean();
+    console.log('Found', list.length, 'career applications');
     res.json(
       list.map((a) => {
         const f = a.fields || {};
@@ -1328,8 +1331,8 @@ app.get('/api/admin/career-applications', authMiddleware, adminOnly, async (req,
       })
     );
   } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'Server error' });
+    console.error('Error fetching career applications:', e.message, e.stack);
+    res.status(500).json({ error: 'Server error', details: e.message });
   }
 });
 
@@ -1342,6 +1345,35 @@ app.delete('/api/admin/career-applications/:id', authMiddleware, adminOnly, asyn
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// Database health check endpoint
+app.get('/api/health/db', async (req, res) => {
+  try {
+    const mongooseConnection = mongoose.connection;
+    if (mongooseConnection.readyState !== 1) {
+      return res.status(503).json({ 
+        status: 'error', 
+        message: 'Database not connected',
+        readyState: mongooseConnection.readyState 
+      });
+    }
+    // Try a simple query to verify the database is responding
+    await models.User.countDocuments();
+    res.json({ status: 'ok', database: 'connected' });
+  } catch (e) {
+    console.error('Database health check failed:', e.message);
+    res.status(503).json({ 
+      status: 'error', 
+      message: 'Database error', 
+      details: e.message 
+    });
   }
 });
 
