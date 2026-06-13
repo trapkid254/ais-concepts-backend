@@ -11,10 +11,18 @@ const crypto = require('crypto');
 const cookieParser = require('cookie-parser');
 const { Server } = require('socket.io');
 const BSON = require('bson');
+const cloudinary = require('cloudinary').v2;
 
 const { signToken, authMiddleware } = require('./auth');
 const models = require('./models');
 const { validatePasswordPolicy } = require('./passwordPolicy');
+
+// Configure Cloudinary
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
+});
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 12 * 1024 * 1024 } });
 
@@ -434,6 +442,38 @@ app.delete('/api/admin/users/:id', authMiddleware, adminOnly, async (req, res) =
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'Server error' });
+  }
+});
+
+/* ——— Image Upload (Cloudinary) ——— */
+app.post('/api/upload-image', authMiddleware, adminOnly, upload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No image provided' });
+    }
+
+    // Convert buffer to base64 data URL for Cloudinary upload
+    const base64 = req.file.buffer.toString('base64');
+    const dataURI = `data:${req.file.mimetype};base64,${base64}`;
+
+    // Upload to Cloudinary
+    const result = await cloudinary.uploader.upload(dataURI, {
+      folder: 'ais-concepts/projects',
+      resource_type: 'auto',
+      quality: 'auto',
+      fetch_format: 'auto'
+    });
+
+    console.log(`✅ Image uploaded to Cloudinary: ${result.public_id}`);
+    res.json({
+      ok: true,
+      url: result.secure_url,
+      public_id: result.public_id,
+      size: result.bytes
+    });
+  } catch (e) {
+    console.error('Cloudinary upload error:', e.message);
+    res.status(500).json({ error: 'Image upload failed', details: e.message });
   }
 });
 
@@ -1189,22 +1229,12 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
     });
     
     // Validate all incoming projects before making destructive DB changes
-    // MongoDB hard limit: 16MB. Use 8MB per project to account for BSON metadata overhead
-    const MAX_PROJECT_IMAGE_CHARS = 8 * 1024 * 1024; // 8MB per project (safe margin)
-    console.log(`📊 Using safe image limit: 8 MB per project`);
+    // With Cloudinary URLs, image sizes are no longer a concern
+    console.log(`📤 Processing ${arr.length} projects with Cloudinary image URLs`);
     for (let i = 0; i < arr.length; i++) {
       const p = arr[i];
       if (!p.title || !p.category) {
         return res.status(400).json({ error: 'validation_error', details: `Project at index ${i} missing required fields: title and/or category` });
-      }
-
-      const projectImages = Array.isArray(p.projectImages) && p.projectImages.length > 0 ? p.projectImages : (p.image ? [p.image] : []);
-      let totalImageSize = 0;
-      projectImages.forEach((img) => {
-        if (typeof img === 'string') totalImageSize += img.length;
-      });
-      if (totalImageSize > MAX_PROJECT_IMAGE_CHARS) {
-        return res.status(400).json({ error: 'image_too_large', details: `Project "${p.title}" image data is ${(totalImageSize / 1024 / 1024).toFixed(2)} MB, exceeds 8 MB limit. (MongoDB hard limit: 16 MB - BSON overhead = 8 MB safe per project)` });
       }
     }
     
