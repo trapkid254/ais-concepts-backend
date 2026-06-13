@@ -1237,22 +1237,6 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
         return res.status(400).json({ error: 'validation_error', details: `Project at index ${i} missing required fields: title and/or category` });
       }
     }
-    
-    for (let i = 0; i < arr.length; i++) {
-      const p = arr[i];
-      if (!p.title || !p.category) {
-        return res.status(400).json({ error: 'validation_error', details: `Project at index ${i} missing required fields: title and/or category` });
-      }
-
-      const projectImages = Array.isArray(p.projectImages) && p.projectImages.length > 0 ? p.projectImages : (p.image ? [p.image] : []);
-      let totalImageSize = 0;
-      projectImages.forEach((img) => {
-        if (typeof img === 'string') totalImageSize += img.length;
-      });
-      if (totalImageSize > MAX_PROJECT_IMAGE_CHARS) {
-        return res.status(400).json({ error: 'image_too_large', details: `Project "${p.title}" image data exceeds limit (${(totalImageSize / 1024 / 1024).toFixed(2)} MB). Maximum allowed is ~${(MAX_PROJECT_IMAGE_CHARS / 1024 / 1024).toFixed(1)} MB per project.` });
-      }
-    }
 
     // All validation passed — safe to delete existing documents and recreate
     await models.WebsiteProject.deleteMany({});
