@@ -188,6 +188,8 @@ const projectEnquirySchema = new mongoose.Schema({
   location: String,
   timeline: String,
   budget: String,
+  message: { type: String, default: '' },
+  source: { type: String, enum: ['homepage', 'contact'], default: 'homepage' },
   fileName: String,
   fileData: String,
   createdAt: { type: Date, default: Date.now }

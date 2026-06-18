@@ -784,17 +784,34 @@ app.post('/api/contact', async (req, res) => {
     if (!name || !email || !message) {
       return res.status(400).json({ error: 'Name, email, and message are required.' });
     }
+    const trimmedName = String(name).trim();
+    const trimmedEmail = String(email).trim();
+    const trimmedPhone = phone ? String(phone).trim() : '';
+    const trimmedMessage = String(message).trim();
+
     await models.ContactMessage.create({
-      name: String(name).trim(),
-      email: String(email).trim(),
-      phone: phone ? String(phone).trim() : '',
-      message: String(message).trim()
+      name: trimmedName,
+      email: trimmedEmail,
+      phone: trimmedPhone,
+      message: trimmedMessage
     });
+
+    await models.ProjectEnquiry.create({
+      name: trimmedName,
+      type: 'Project inquiry',
+      contact: trimmedPhone ? `${trimmedEmail} | ${trimmedPhone}` : trimmedEmail,
+      location: '',
+      timeline: '',
+      budget: '',
+      message: trimmedMessage,
+      source: 'contact'
+    });
+
     await sendWebsiteContactEmail({
-      name: String(name).trim(),
-      email: String(email).trim(),
-      phone: phone ? String(phone).trim() : '',
-      message: String(message).trim()
+      name: trimmedName,
+      email: trimmedEmail,
+      phone: trimmedPhone,
+      message: trimmedMessage
     });
     res.json({ ok: true, message: 'Thank you. Your message has been received.' });
   } catch (e) {
@@ -819,6 +836,8 @@ app.post('/api/enquiries', upload.single('file'), async (req, res) => {
       location: body.location,
       timeline: body.timeline,
       budget: body.budget,
+      message: body.message ? String(body.message).trim() : '',
+      source: 'homepage',
       fileName,
       fileData
     });
@@ -1540,6 +1559,8 @@ app.get('/api/admin/enquiries', authMiddleware, adminOnly, async (req, res) => {
         location: e.location,
         timeline: e.timeline,
         budget: e.budget,
+        message: e.message || '',
+        source: e.source || 'homepage',
         date: e.createdAt
       }))
     );
