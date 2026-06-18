@@ -1553,6 +1553,7 @@ app.get('/api/admin/enquiries', authMiddleware, adminOnly, async (req, res) => {
     const list = await models.ProjectEnquiry.find().sort({ createdAt: -1 }).lean();
     res.json(
       list.map((e) => ({
+        id: String(e._id),
         name: e.name,
         contact: e.contact,
         type: e.type,
@@ -1564,6 +1565,33 @@ app.get('/api/admin/enquiries', authMiddleware, adminOnly, async (req, res) => {
         date: e.createdAt
       }))
     );
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.delete('/api/admin/enquiries/:id', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const id = req.params.id;
+    if (!id || id === 'undefined' || id === 'null' || !mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: 'Invalid enquiry id' });
+    }
+    const removed = await models.ProjectEnquiry.findByIdAndDelete(id);
+    if (!removed) return res.status(404).json({ error: 'Enquiry not found' });
+
+    if (removed.source === 'contact') {
+      const emailPart = (removed.contact || '').split(' | ')[0].trim();
+      if (emailPart) {
+        await models.ContactMessage.deleteMany({
+          name: removed.name,
+          email: emailPart,
+          message: removed.message || ''
+        });
+      }
+    }
+
+    res.json({ ok: true });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'Server error' });
