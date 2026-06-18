@@ -24,7 +24,30 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 12 * 1024 * 1024 } });
+const cloudinaryConfigured = Boolean(
+  process.env.CLOUDINARY_CLOUD_NAME &&
+  process.env.CLOUDINARY_API_KEY &&
+  process.env.CLOUDINARY_API_SECRET
+);
+if (!cloudinaryConfigured) {
+  console.warn('⚠️ Cloudinary env vars missing (CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET). /api/upload-image will fail until set on Render.');
+}
+
+const MAX_IMAGE_BYTES = 50 * 1024 * 1024;
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_IMAGE_BYTES } });
+
+function uploadBufferToCloudinary(buffer) {
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      { folder: 'ais-concepts/projects', resource_type: 'image' },
+      (error, result) => {
+        if (error) reject(error);
+        else resolve(result);
+      }
+    );
+    stream.end(buffer);
+  });
+}
 
 const app = express();
 
@@ -446,35 +469,71 @@ app.delete('/api/admin/users/:id', authMiddleware, adminOnly, async (req, res) =
 });
 
 /* ——— Image Upload (Cloudinary) ——— */
-app.post('/api/upload-image', authMiddleware, adminOnly, upload.single('image'), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No image provided' });
+
+// Helper: Extract public ID from Cloudinary URL
+function extractPublicIdFromCloudinaryUrl(url) {
+  if (!url || typeof url !== 'string') return null;
+  // URL format: https://res.cloudinary.com/{cloud_name}/image/upload/v{version}/{public_id}.ext
+  const match = url.match(/\/image\/upload\/(?:v\d+\/)?(.+?)(?:\.[a-z]+)?$/i);
+  return match ? match[1] : null;
+}
+
+// Helper: Delete images from Cloudinary by URL
+async function deleteCloudinaryImages(imageUrls) {
+  if (!imageUrls || !Array.isArray(imageUrls)) return;
+  
+  for (const url of imageUrls) {
+    try {
+      const publicId = extractPublicIdFromCloudinaryUrl(url);
+      if (publicId) {
+        await cloudinary.uploader.destroy(publicId);
+        console.log(`🗑️ Deleted from Cloudinary: ${publicId}`);
+      }
+    } catch (err) {
+      console.error(`⚠️ Failed to delete Cloudinary image: ${err.message}`);
+    }
+  }
+}
+
+app.post('/api/upload-image', authMiddleware, adminOnly, (req, res) => {
+  upload.single('image')(req, res, async (multerErr) => {
+    if (multerErr) {
+      if (multerErr.code === 'LIMIT_FILE_SIZE') {
+        return res.status(413).json({
+          error: 'File too large',
+          details: `Maximum image size is ${MAX_IMAGE_BYTES / 1024 / 1024}MB per file`
+        });
+      }
+      console.error('Multer upload error:', multerErr.message);
+      return res.status(400).json({ error: 'Upload error', details: multerErr.message });
     }
 
-    // Convert buffer to base64 data URL for Cloudinary upload
-    const base64 = req.file.buffer.toString('base64');
-    const dataURI = `data:${req.file.mimetype};base64,${base64}`;
+    try {
+      if (!cloudinaryConfigured) {
+        return res.status(503).json({
+          error: 'Image upload not configured',
+          details: 'Cloudinary credentials are missing on the server. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET in Render environment variables.'
+        });
+      }
 
-    // Upload to Cloudinary
-    const result = await cloudinary.uploader.upload(dataURI, {
-      folder: 'ais-concepts/projects',
-      resource_type: 'auto',
-      quality: 'auto',
-      fetch_format: 'auto'
-    });
+      if (!req.file) {
+        return res.status(400).json({ error: 'No image provided' });
+      }
 
-    console.log(`✅ Image uploaded to Cloudinary: ${result.public_id}`);
-    res.json({
-      ok: true,
-      url: result.secure_url,
-      public_id: result.public_id,
-      size: result.bytes
-    });
-  } catch (e) {
-    console.error('Cloudinary upload error:', e.message);
-    res.status(500).json({ error: 'Image upload failed', details: e.message });
-  }
+      const result = await uploadBufferToCloudinary(req.file.buffer);
+
+      console.log(`✅ Image uploaded to Cloudinary: ${result.public_id}`);
+      res.json({
+        ok: true,
+        url: result.secure_url,
+        public_id: result.public_id,
+        size: result.bytes
+      });
+    } catch (e) {
+      console.error('Cloudinary upload error:', e.message || e);
+      res.status(500).json({ error: 'Image upload failed', details: e.message || String(e) });
+    }
+  });
 });
 
 /* ——— Public CMS & Authenticated Project API ——— */
@@ -1239,6 +1298,16 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
     }
 
     // All validation passed — safe to delete existing documents and recreate
+    // First, fetch all existing projects and delete their Cloudinary images
+    const existingProjects = await models.WebsiteProject.find({}).lean();
+    console.log(`\n🗑️ Deleting ${existingProjects.length} existing projects and their Cloudinary images...`);
+    for (const existing of existingProjects) {
+      if (existing.projectImages && Array.isArray(existing.projectImages)) {
+        await deleteCloudinaryImages(existing.projectImages);
+      }
+    }
+    
+    // Now delete all projects from database
     await models.WebsiteProject.deleteMany({});
 
     for (let i = 0; i < arr.length; i++) {
@@ -1330,6 +1399,34 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
     res.json({ ok: true });
   } catch (e) {
     console.error('❌ Error in PUT /api/admin/projects:', e);
+    res.status(500).json({ error: 'Server error', details: e.message });
+  }
+});
+
+app.delete('/api/admin/projects/:projectId', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const { projectId } = req.params;
+    console.log(`🗑️ Delete request for website project: ${projectId}`);
+    
+    // Find the project
+    const project = await models.WebsiteProject.findById(projectId);
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+    
+    // Delete associated Cloudinary images
+    if (project.projectImages && Array.isArray(project.projectImages)) {
+      console.log(`🗑️ Deleting ${project.projectImages.length} Cloudinary images for project: ${project.title}`);
+      await deleteCloudinaryImages(project.projectImages);
+    }
+    
+    // Delete the project
+    await models.WebsiteProject.findByIdAndDelete(projectId);
+    console.log(`✅ Project deleted: ${project.title}`);
+    
+    res.json({ ok: true, message: `Project "${project.title}" deleted successfully` });
+  } catch (e) {
+    console.error('❌ Error deleting project:', e);
     res.status(500).json({ error: 'Server error', details: e.message });
   }
 });
