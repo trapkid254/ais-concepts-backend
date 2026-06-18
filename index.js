@@ -1298,12 +1298,25 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
     }
 
     // All validation passed — safe to delete existing documents and recreate
-    // First, fetch all existing projects and delete their Cloudinary images
+    // Only delete Cloudinary images that are no longer referenced (orphaned)
     const existingProjects = await models.WebsiteProject.find({}).lean();
-    console.log(`\n🗑️ Deleting ${existingProjects.length} existing projects and their Cloudinary images...`);
+    const incomingUrls = new Set();
+    for (const p of arr) {
+      if (Array.isArray(p.projectImages)) {
+        p.projectImages.forEach((url) => { if (url) incomingUrls.add(url); });
+      }
+      if (p.image) incomingUrls.add(p.image);
+      if (p.heroImage) incomingUrls.add(p.heroImage);
+    }
+
+    console.log(`\n🗑️ Checking ${existingProjects.length} existing projects for orphaned Cloudinary images...`);
     for (const existing of existingProjects) {
       if (existing.projectImages && Array.isArray(existing.projectImages)) {
-        await deleteCloudinaryImages(existing.projectImages);
+        const orphaned = existing.projectImages.filter((url) => url && !incomingUrls.has(url));
+        if (orphaned.length) {
+          console.log(`   Removing ${orphaned.length} orphaned image(s) for "${existing.title}"`);
+          await deleteCloudinaryImages(orphaned);
+        }
       }
     }
     
