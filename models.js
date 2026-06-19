@@ -25,7 +25,9 @@ const websiteProjectSchema = new mongoose.Schema({
   categorySecondary: { type: String, default: '' },
   image: { type: String, default: '' },
   heroImage: { type: String, default: '' },
-  projectImages: [{ type: String }], // Multiple images: first is main/featured on public site
+  projectImages: [{ type: String }], // Legacy / featured list (first As Designed image)
+  asDesignedImages: [{ type: String }],
+  asBuiltImages: [{ type: String }],
   description: { type: String, default: '' },
   conceptSketches: [{ type: String }],
   siteAnalysis: [{ type: String }],

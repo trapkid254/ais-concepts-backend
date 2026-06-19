@@ -468,8 +468,6 @@ app.delete('/api/admin/users/:id', authMiddleware, adminOnly, async (req, res) =
   }
 });
 
-/* ——— Image Upload (Cloudinary) ——— */
-
 // Helper: Extract public ID from Cloudinary URL
 function extractPublicIdFromCloudinaryUrl(url) {
   if (!url || typeof url !== 'string') return null;
@@ -493,6 +491,36 @@ async function deleteCloudinaryImages(imageUrls) {
       console.error(`⚠️ Failed to delete Cloudinary image: ${err.message}`);
     }
   }
+}
+
+function getWebsiteProjectGallery(p) {
+  const src = p || {};
+  let asDesignedImages = Array.isArray(src.asDesignedImages) ? src.asDesignedImages.filter(Boolean) : [];
+  let asBuiltImages = Array.isArray(src.asBuiltImages) ? src.asBuiltImages.filter(Boolean) : [];
+
+  if (!asDesignedImages.length && !asBuiltImages.length && Array.isArray(src.projectImages)) {
+    asDesignedImages = src.projectImages.filter(Boolean);
+  }
+
+  const featured = asDesignedImages[0] || asBuiltImages[0] || src.image || '';
+  return {
+    asDesignedImages,
+    asBuiltImages,
+    projectImages: asDesignedImages.length ? asDesignedImages : asBuiltImages,
+    image: featured,
+    heroImage: src.heroImage || featured
+  };
+}
+
+function collectProjectImageUrls(p) {
+  const gallery = getWebsiteProjectGallery(p);
+  const urls = new Set();
+  gallery.asDesignedImages.forEach((url) => urls.add(url));
+  gallery.asBuiltImages.forEach((url) => urls.add(url));
+  if (Array.isArray(p.projectImages)) p.projectImages.forEach((url) => { if (url) urls.add(url); });
+  if (p.image) urls.add(p.image);
+  if (p.heroImage) urls.add(p.heroImage);
+  return urls;
 }
 
 app.post('/api/upload-image', authMiddleware, adminOnly, (req, res) => {
@@ -594,15 +622,19 @@ app.get('/api/projects', async (req, res) => {
         if (p.metrics.innovation != null) metrics.innovation = p.metrics.innovation;
       }
       
+      const gallery = getWebsiteProjectGallery(p);
+      
       return {
         id: p._id,
         slug: p.slug,
         title: p.title,
         category: p.category,
         categorySecondary: p.categorySecondary,
-        image: p.image,
-        heroImage: p.heroImage || p.image,
-        projectImages: (Array.isArray(p.projectImages) && p.projectImages.length > 0) ? p.projectImages : (p.image ? [p.image] : []),
+        image: gallery.image,
+        heroImage: gallery.heroImage,
+        projectImages: gallery.projectImages,
+        asDesignedImages: gallery.asDesignedImages,
+        asBuiltImages: gallery.asBuiltImages,
         description: p.description,
         conceptSketches: p.conceptSketches || [],
         siteAnalysis: p.siteAnalysis || [],
@@ -646,15 +678,19 @@ app.get('/api/projects/detail/:slug', async (req, res) => {
       if (p.metrics.innovation != null) metrics.innovation = p.metrics.innovation;
     }
     
+    const gallery = getWebsiteProjectGallery(p);
+    
     const response = {
       id: p._id,
       slug: p.slug,
       title: p.title,
       category: p.category,
       categorySecondary: p.categorySecondary,
-      image: p.image,
-      heroImage: p.heroImage || p.image,
-      projectImages: (Array.isArray(p.projectImages) && p.projectImages.length > 0) ? p.projectImages : (p.image ? [p.image] : []),
+      image: gallery.image,
+      heroImage: gallery.heroImage,
+      projectImages: gallery.projectImages,
+      asDesignedImages: gallery.asDesignedImages,
+      asBuiltImages: gallery.asBuiltImages,
       description: p.description,
       conceptSketches: p.conceptSketches || [],
       siteAnalysis: p.siteAnalysis || [],
@@ -1321,21 +1357,16 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
     const existingProjects = await models.WebsiteProject.find({}).lean();
     const incomingUrls = new Set();
     for (const p of arr) {
-      if (Array.isArray(p.projectImages)) {
-        p.projectImages.forEach((url) => { if (url) incomingUrls.add(url); });
-      }
-      if (p.image) incomingUrls.add(p.image);
-      if (p.heroImage) incomingUrls.add(p.heroImage);
+      collectProjectImageUrls(p).forEach((url) => incomingUrls.add(url));
     }
 
     console.log(`\n🗑️ Checking ${existingProjects.length} existing projects for orphaned Cloudinary images...`);
     for (const existing of existingProjects) {
-      if (existing.projectImages && Array.isArray(existing.projectImages)) {
-        const orphaned = existing.projectImages.filter((url) => url && !incomingUrls.has(url));
-        if (orphaned.length) {
-          console.log(`   Removing ${orphaned.length} orphaned image(s) for "${existing.title}"`);
-          await deleteCloudinaryImages(orphaned);
-        }
+      const existingUrls = collectProjectImageUrls(existing);
+      const orphaned = [...existingUrls].filter((url) => !incomingUrls.has(url));
+      if (orphaned.length) {
+        console.log(`   Removing ${orphaned.length} orphaned image(s) for "${existing.title}"`);
+        await deleteCloudinaryImages(orphaned);
       }
     }
     
@@ -1346,24 +1377,19 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
       const p = arr[i];
       console.log(`\n➡️ Processing project ${i + 1}/${arr.length}: "${p.title}"`);
 
-      // Use projectImages if provided, otherwise fall back to image
-      let projectImages = [];
-      if (Array.isArray(p.projectImages) && p.projectImages.length > 0) {
-        projectImages = p.projectImages;
-        console.log(`   ✓ Has projectImages array with ${projectImages.length} images`);
-        let totalImageSize = 0;
-        projectImages.forEach((img, idx) => {
-          if (typeof img === 'string') {
-            totalImageSize += img.length;
-            console.log(`     Image ${idx + 1}: ${img.substring(0, 30)}... (${img.length} chars)`);
-          }
-        });
-        console.log(`   Total image data size: ${totalImageSize} characters (~${(totalImageSize / 1024 / 1024).toFixed(2)} MB)`);
-      } else if (p.image) {
-        projectImages = [p.image];
-        console.log(`   ℹ️ Using fallback image field`);
-      } else {
-        console.log(`   ⚠️ No projectImages and no fallback image!`);
+      const gallery = getWebsiteProjectGallery(p);
+      const asDesignedImages = gallery.asDesignedImages;
+      const asBuiltImages = gallery.asBuiltImages;
+      const projectImages = gallery.projectImages;
+
+      if (asDesignedImages.length) {
+        console.log(`   ✓ As Designed images: ${asDesignedImages.length}`);
+      }
+      if (asBuiltImages.length) {
+        console.log(`   ✓ As Built images: ${asBuiltImages.length}`);
+      }
+      if (!asDesignedImages.length && !asBuiltImages.length) {
+        console.log(`   ⚠️ No gallery images provided`);
       }
 
       // Parse metrics - only include if values are provided
@@ -1392,9 +1418,11 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
           title: p.title,
           category: p.category,
           categorySecondary: p.categorySecondary || '',
-          image: projectImages[0] || p.image || '',
-          heroImage: p.heroImage || projectImages[0] || p.image || '',
+          image: gallery.image || p.image || '',
+          heroImage: gallery.heroImage || gallery.image || p.image || '',
           projectImages: projectImages,
+          asDesignedImages: asDesignedImages,
+          asBuiltImages: asBuiltImages,
           description: p.description || '',
           conceptSketches: p.conceptSketches || [],
           siteAnalysis: p.siteAnalysis || [],
@@ -1447,9 +1475,10 @@ app.delete('/api/admin/projects/:projectId', authMiddleware, adminOnly, async (r
     }
     
     // Delete associated Cloudinary images
-    if (project.projectImages && Array.isArray(project.projectImages)) {
-      console.log(`🗑️ Deleting ${project.projectImages.length} Cloudinary images for project: ${project.title}`);
-      await deleteCloudinaryImages(project.projectImages);
+    const imageUrls = [...collectProjectImageUrls(project)];
+    if (imageUrls.length) {
+      console.log(`🗑️ Deleting ${imageUrls.length} Cloudinary images for project: ${project.title}`);
+      await deleteCloudinaryImages(imageUrls);
     }
     
     // Delete the project
