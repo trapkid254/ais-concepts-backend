@@ -40,6 +40,8 @@ const websiteProjectSchema = new mongoose.Schema({
     sustainability: { type: Number, min: 0, max: 100 },
     innovation: { type: Number, min: 0, max: 100 }
   },
+  featuredOnHomepage: { type: Boolean, default: false },
+  homeSortOrder: { type: Number, default: 0 },
   sortOrder: { type: Number, default: 0 },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }

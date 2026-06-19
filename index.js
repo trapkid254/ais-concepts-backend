@@ -643,7 +643,9 @@ app.get('/api/projects', async (req, res) => {
         constructionPhotos: p.constructionPhotos || [],
         completedPhotos: p.completedPhotos || [],
         metrics: metrics,
-        hasMetrics: Object.keys(metrics).length > 0
+        hasMetrics: Object.keys(metrics).length > 0,
+        featuredOnHomepage: !!p.featuredOnHomepage,
+        homeSortOrder: p.homeSortOrder != null ? p.homeSortOrder : 0
       };
     });
     res.json(mapped);
@@ -699,7 +701,9 @@ app.get('/api/projects/detail/:slug', async (req, res) => {
       constructionPhotos: p.constructionPhotos || [],
       completedPhotos: p.completedPhotos || [],
       metrics: metrics,
-      hasMetrics: Object.keys(metrics).length > 0
+      hasMetrics: Object.keys(metrics).length > 0,
+      featuredOnHomepage: !!p.featuredOnHomepage,
+      homeSortOrder: p.homeSortOrder != null ? p.homeSortOrder : 0
     };
     
     console.log(`📤 Returning ${response.projectImages.length} images to client`);
@@ -1431,7 +1435,9 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
           constructionPhotos: p.constructionPhotos || [],
           completedPhotos: p.completedPhotos || [],
           metrics: metrics,
-          sortOrder: i
+          sortOrder: i,
+          featuredOnHomepage: !!p.featuredOnHomepage,
+          homeSortOrder: p.featuredOnHomepage && p.homeSortOrder != null ? p.homeSortOrder : 0
         };
         
         const bsonBytes = BSON.serialize(docToSave).length;
