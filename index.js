@@ -16,6 +16,11 @@ const cloudinary = require('cloudinary').v2;
 const { signToken, authMiddleware } = require('./auth');
 const models = require('./models');
 const { validatePasswordPolicy } = require('./passwordPolicy');
+const {
+  WEBSITE_PROJECT_CATEGORIES,
+  LEGACY_WEBSITE_PROJECT_CATEGORIES,
+  isValidWebsiteProjectCategory
+} = require('./projectCategories');
 
 // Configure Cloudinary
 cloudinary.config({
@@ -565,6 +570,13 @@ app.post('/api/upload-image', authMiddleware, adminOnly, (req, res) => {
 });
 
 /* ——— Public CMS & Authenticated Project API ——— */
+app.get('/api/project-categories', (req, res) => {
+  res.json({
+    categories: WEBSITE_PROJECT_CATEGORIES,
+    legacy: LEGACY_WEBSITE_PROJECT_CATEGORIES
+  });
+});
+
 app.get('/api/projects', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -1353,6 +1365,12 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
       const p = arr[i];
       if (!p.title || !p.category) {
         return res.status(400).json({ error: 'validation_error', details: `Project at index ${i} missing required fields: title and/or category` });
+      }
+      if (!isValidWebsiteProjectCategory(p.category)) {
+        return res.status(400).json({
+          error: 'validation_error',
+          details: `Project at index ${i} has invalid category "${p.category}". Allowed: ${WEBSITE_PROJECT_CATEGORIES.join(', ')}`
+        });
       }
     }
 
