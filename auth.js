@@ -31,7 +31,11 @@ function authMiddleware(req, res, next) {
   if (!payload) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
+  // Normalize aliases used across older handlers
+  payload._id = payload.sub;
+  payload.id = payload.sub;
   req.user = payload;
+  req.authToken = token;
   next();
 }
 

@@ -77,7 +77,10 @@ const workerSchema = new mongoose.Schema({
     livenessImages: [{ type: String }],
     registrationDate: { type: Date, default: Date.now }
   },
-  assignedProjects: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Project' }],
+  assignedProjects: [{ type: mongoose.Schema.Types.ObjectId, ref: 'EnhancedProject' }],
+  registeredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  skills: { type: String, default: '' },
+  status: { type: String, enum: ['active', 'inactive'], default: 'active' },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 }, { timestamps: true });
@@ -125,7 +128,7 @@ const enhancedProjectSchema = new mongoose.Schema({
 // Attendance Schema with GPS and Face Recognition
 const attendanceSchema = new mongoose.Schema({
   workerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Worker', required: true },
-  projectId: { type: mongoose.Schema.Types.ObjectId, ref: 'Project', required: true },
+  projectId: { type: mongoose.Schema.Types.ObjectId, ref: 'EnhancedProject', required: true },
   date: { type: Date, required: true },
   time: { type: String, required: true }, // Check-in time
   status: { 
@@ -145,7 +148,7 @@ const attendanceSchema = new mongoose.Schema({
 // Payroll Schema
 const payrollSchema = new mongoose.Schema({
   workerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Worker', required: true },
-  projectId: { type: mongoose.Schema.Types.ObjectId, ref: 'Project', required: true },
+  projectId: { type: mongoose.Schema.Types.ObjectId, ref: 'EnhancedProject', required: true },
   payPeriod: {
     startDate: { type: Date, required: true },
     endDate: { type: Date, required: true }
@@ -231,6 +234,16 @@ const portalStateSchema = new mongoose.Schema({
   employeeAssignmentStatus: { type: mongoose.Schema.Types.Mixed, default: {} },
   adminClientProgressUpdates: { type: [mongoose.Schema.Types.Mixed], default: [] },
   notifications: { type: [mongoose.Schema.Types.Mixed], default: [] },
+  clientTransactions: { type: [mongoose.Schema.Types.Mixed], default: [] },
+  clientNotifications: { type: [mongoose.Schema.Types.Mixed], default: [] },
+  portalClients: { type: [mongoose.Schema.Types.Mixed], default: [] },
+  adminFundRequests: { type: [mongoose.Schema.Types.Mixed], default: [] },
+  adminCommunications: { type: [mongoose.Schema.Types.Mixed], default: [] },
+  adminSites: { type: [mongoose.Schema.Types.Mixed], default: [] },
+  adminFinancials: { type: [mongoose.Schema.Types.Mixed], default: [] },
+  adminApprovals: { type: [mongoose.Schema.Types.Mixed], default: [] },
+  adminPortfolio: { type: [mongoose.Schema.Types.Mixed], default: [] },
+  faqs: { type: [mongoose.Schema.Types.Mixed], default: [] },
   adminSettings: {
     invoiceDueDays: { type: String, default: '30' },
     emailNotif: { type: String, default: '1' },
