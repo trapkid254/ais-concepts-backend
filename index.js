@@ -210,14 +210,35 @@ async function requireApprovedAccount(req, res, next) {
 /* ——— User Management ——— */
 app.get('/api/users', authMiddleware, adminOnly, async (req, res) => {
   try {
-    const { role } = req.query;
-    const filter = role ? { role } : {};
+    const { role, status } = req.query;
+    const filter = {};
+    if (role) filter.role = String(role).toLowerCase();
+    if (status === 'approved') {
+      filter.$or = [
+        { approvalStatus: 'approved' },
+        { approvalStatus: { $exists: false } },
+        { role: 'admin' }
+      ];
+    } else if (status === 'pending') {
+      filter.approvalStatus = 'pending';
+    }
     const users = await models.User.find(filter)
       .select('-passwordHash')
       .sort({ createdAt: -1 });
     res.json(users);
   } catch (error) {
     console.error('Error fetching users:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.get('/api/users/:id', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const user = await models.User.findById(req.params.id).select('-passwordHash').lean();
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    res.json(user);
+  } catch (error) {
+    console.error('Error fetching user:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -485,6 +506,62 @@ app.get('/api/admin/users', authMiddleware, adminOnly, async (req, res) => {
         lastLogin: u.lastLogin ? new Date(u.lastLogin).toISOString() : '-'
       }))
     );
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.put('/api/admin/users/:id', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const target = await models.User.findById(req.params.id);
+    if (!target) return res.status(404).json({ error: 'User not found' });
+
+    const { name, email, role, status } = req.body || {};
+    if (name != null) target.name = String(name).trim() || target.name;
+    if (email != null) {
+      const nextEmail = String(email).trim().toLowerCase();
+      if (nextEmail && nextEmail !== target.email) {
+        const exists = await models.User.findOne({ email: nextEmail, _id: { $ne: target._id } });
+        if (exists) return res.status(400).json({ error: 'Email already in use' });
+        target.email = nextEmail;
+      }
+    }
+    if (role != null) {
+      const nextRole = String(role).toLowerCase();
+      if (['client', 'employee', 'admin', 'foreman'].includes(nextRole)) {
+        if (target.role === 'admin' && nextRole !== 'admin') {
+          const admins = await models.User.countDocuments({ role: 'admin' });
+          if (admins <= 1) return res.status(400).json({ error: 'Cannot demote the only admin' });
+        }
+        target.role = nextRole;
+      }
+    }
+    if (status != null) {
+      const s = String(status).toLowerCase();
+      if (s === 'inactive' || s === 'suspended') {
+        target.approvalStatus = 'pending';
+      } else if (s === 'active' || s === 'approved') {
+        target.approvalStatus = 'approved';
+      }
+    }
+    await target.save();
+    res.json({
+      ok: true,
+      user: {
+        id: String(target._id),
+        name: target.name || target.email,
+        email: target.email,
+        role: target.role ? target.role.charAt(0).toUpperCase() + target.role.slice(1) : '',
+        status:
+          target.role === 'admin'
+            ? 'Active'
+            : target.approvalStatus === 'pending'
+              ? 'Pending'
+              : 'Active',
+        lastLogin: target.lastLogin ? new Date(target.lastLogin).toISOString() : '-'
+      }
+    });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: 'Server error' });
