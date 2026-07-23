@@ -716,14 +716,40 @@ app.get('/api/projects', async (req, res) => {
       try {
         const decoded = jwt.verify(authHeader.replace('Bearer ', ''), JWT_SECRET);
         if (decoded.role === 'admin') {
-          const projects = await models.EnhancedProject.find().populate('client', 'name email').sort({ createdAt: -1 });
-          return res.json(projects);
+          const projects = await models.EnhancedProject.find().populate('client', 'name email').sort({ createdAt: -1 }).lean();
+          return res.json(projects.map((p) => ({
+            ...p,
+            id: String(p._id),
+            workerCount: Array.isArray(p.workers) ? p.workers.length : 0,
+            employeeCount: Array.isArray(p.assignedEmployees) ? p.assignedEmployees.length : 0,
+            deadline: p.endDate ? new Date(p.endDate).toISOString().slice(0, 10) : ''
+          })));
         }
         if (decoded.role === 'foreman') {
-          const projects = await models.EnhancedProject.find({
-            foremanId: decoded.sub
-          }).populate('client', 'name email').sort({ createdAt: -1 });
-          return res.json(projects);
+          const foremanOid = mongoose.Types.ObjectId.isValid(decoded.sub)
+            ? new mongoose.Types.ObjectId(decoded.sub)
+            : null;
+          const dbForeman = foremanOid
+            ? await models.User.findById(foremanOid).select('assignedProjects').lean()
+            : null;
+          const or = [];
+          if (foremanOid) {
+            or.push({ foremanId: foremanOid });
+            or.push({ foremanId: String(decoded.sub) });
+          }
+          if (dbForeman?.assignedProjects?.length) {
+            or.push({ _id: { $in: dbForeman.assignedProjects } });
+          }
+          const projects = or.length
+            ? await models.EnhancedProject.find({ $or: or }).populate('client', 'name email').sort({ createdAt: -1 }).lean()
+            : [];
+          return res.json(projects.map((p) => ({
+            ...p,
+            id: String(p._id),
+            workerCount: Array.isArray(p.workers) ? p.workers.length : 0,
+            employeeCount: Array.isArray(p.assignedEmployees) ? p.assignedEmployees.length : 0,
+            deadline: p.endDate ? new Date(p.endDate).toISOString().slice(0, 10) : ''
+          })));
         }
         // Employee can see projects they're assigned to (via assignedEmployees + User.assignedProjects)
         if (decoded.role === 'employee') {
@@ -1092,7 +1118,8 @@ const PORTAL_KEYS = [
   'adminSites',
   'adminFinancials',
   'adminApprovals',
-  'adminPortfolio'
+  'adminPortfolio',
+  'adminTasks'
 ];
 
 app.get('/api/notifications', authMiddleware, requireApprovedAccount, async (req, res) => {
@@ -1363,6 +1390,7 @@ app.get('/api/portal/bootstrap', authMiddleware, requireApprovedAccount, async (
       adminFinancials: state.adminFinancials || [],
       adminApprovals: state.adminApprovals || [],
       adminPortfolio: state.adminPortfolio || [],
+      adminTasks: state.adminTasks || [],
       faqs: state.faqs || []
     };
 
@@ -1378,6 +1406,8 @@ app.get('/api/portal/bootstrap', authMiddleware, requireApprovedAccount, async (
       payload.adminSettings = {};
       payload.faqs = [];
       payload.careerApplications = [];
+      // Non-admins do not get the full admin task board; employees get filtered below
+      if (role !== 'employee') payload.adminTasks = [];
 
       payload.portalMessages = (payload.portalMessages || []).filter((m) => {
         const to = String(m.to || '').toLowerCase();
@@ -1480,6 +1510,36 @@ app.get('/api/portal/bootstrap', authMiddleware, requireApprovedAccount, async (
         payload.employeeTaskUpdates = (payload.employeeTaskUpdates || []).filter(
           (x) => String(x.employeeEmail || '').toLowerCase() === email
         );
+        // Tasks assigned via Admin Task Management
+        const myTasks = (payload.adminTasks || []).filter((t) => {
+          const assignee = String(t.assigneeEmail || t.employeeEmail || '').toLowerCase();
+          const assigneeId = String(t.assignee || t.assigneeId || '');
+          return assignee === email || (assigneeId && assigneeId === String(req.user.sub));
+        });
+        payload.adminTasks = myTasks;
+        payload.employeeTasks = myTasks;
+        // Merge task projects into assignments so Projects tab shows them
+        myTasks.forEach((t) => {
+          if (!t.projectName && !t.project) return;
+          const projectLabel = t.projectName || t.project;
+          const exists = (payload.assignments || []).some(
+            (a) =>
+              String(a.project || '').toLowerCase() === String(projectLabel).toLowerCase() ||
+              (t.projectId && String(a.projectId) === String(t.projectId))
+          );
+          if (!exists) {
+            payload.assignments = payload.assignments || [];
+            payload.assignments.push({
+              project: projectLabel,
+              employeeEmail: email,
+              due: t.dueDate || '',
+              deadline: t.dueDate || '',
+              notes: t.title || t.description || '',
+              projectId: t.projectId || t.project || '',
+              fromTask: true
+            });
+          }
+        });
         const status = payload.employeeAssignmentStatus || {};
         payload.employeeAssignmentStatus = Object.keys(status).reduce((acc, k) => {
           if (String(k).toLowerCase().includes(email) || status[k]?.employeeEmail === email) {
@@ -1535,7 +1595,7 @@ app.put('/api/portal/key/:key', authMiddleware, requireApprovedAccount, async (r
     const adminOnlyKeys = [
       'portalUsers', 'portalClients', 'adminFundRequests', 'adminCommunications',
       'adminSites', 'adminFinancials', 'adminApprovals', 'adminPortfolio',
-      'adminSettings', 'faqs', 'careerApplications', 'portalProjects'
+      'adminSettings', 'faqs', 'careerApplications', 'portalProjects', 'adminTasks'
     ];
     if (role !== 'admin' && adminOnlyKeys.includes(key)) {
       return res.status(403).json({ error: 'Access denied' });
@@ -2352,13 +2412,22 @@ app.post('/api/projects/:projectId/assign-worker', authMiddleware, adminOnly, as
 // Assign Employee to Project with Duties
 app.post('/api/projects/:projectId/assign-employee', authMiddleware, adminOnly, async (req, res) => {
   try {
-    const { employeeId, duties } = req.body;
+    let { employeeId, duties, employeeEmail } = req.body;
     const projectId = req.params.projectId;
 
-    console.log('Assign employee request:', { employeeId, duties, projectId });
+    console.log('Assign employee request:', { employeeId, employeeEmail, duties, projectId });
+
+    if (!employeeId && employeeEmail) {
+      const byEmail = await models.User.findOne({
+        email: String(employeeEmail).toLowerCase().trim(),
+        role: 'employee'
+      });
+      if (!byEmail) return res.status(404).json({ error: 'Employee not found for that email' });
+      employeeId = String(byEmail._id);
+    }
 
     if (!employeeId) {
-      return res.status(400).json({ error: 'Employee ID required' });
+      return res.status(400).json({ error: 'Employee ID or email required' });
     }
     if (!mongoose.Types.ObjectId.isValid(projectId)) {
       return res.status(400).json({ error: 'Invalid project ID' });
@@ -2833,7 +2902,10 @@ app.post('/api/projects', authMiddleware, adminOnly, upload.array('images', 10),
       budget: parseMoney(budget),
       startDate: deadline ? new Date(deadline) : new Date(),
       endDate: deadline ? new Date(deadline) : new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
-      foremanId: parsedAssignedForeman?._id || parsedAssignedForeman?.id || null,
+      foremanId: (parsedAssignedForeman?._id || parsedAssignedForeman?.id) &&
+        mongoose.Types.ObjectId.isValid(String(parsedAssignedForeman._id || parsedAssignedForeman.id))
+        ? (parsedAssignedForeman._id || parsedAssignedForeman.id)
+        : null,
       foremanName: parsedAssignedForeman?.name || '',
       progress: parseFloat(progress) || 0,
       status: (status || 'planning').toLowerCase(),
@@ -2847,13 +2919,35 @@ app.post('/api/projects', authMiddleware, adminOnly, upload.array('images', 10),
     });
     
     // If foreman was assigned, update the foreman's assigned projects
-    if (parsedAssignedForeman?._id || parsedAssignedForeman?.id) {
-      const foremanId = parsedAssignedForeman._id || parsedAssignedForeman.id;
-      await models.User.findByIdAndUpdate(foremanId, {
+    const createdForemanId = parsedAssignedForeman?._id || parsedAssignedForeman?.id;
+    if (createdForemanId && mongoose.Types.ObjectId.isValid(String(createdForemanId))) {
+      await models.User.findByIdAndUpdate(createdForemanId, {
         $addToSet: { assignedProjects: project._id }
       });
+      // Ensure project stores ObjectId, not a non-id string
+      if (String(project.foremanId || '') !== String(createdForemanId)) {
+        project.foremanId = createdForemanId;
+        project.foremanName = parsedAssignedForeman?.name || project.foremanName || '';
+        await project.save();
+      }
     }
     
+    // Notify assigned foreman
+    try {
+      const foremanUser = createdForemanId
+        ? await models.User.findById(createdForemanId).lean()
+        : null;
+      if (foremanUser?.email) {
+        await broadcastNotification({
+          title: 'New project assigned',
+          message: `You have been assigned as foreman on "${project.name}".`,
+          targets: [foremanUser.email, 'admin'],
+          type: 'project',
+          meta: { projectId: String(project._id) }
+        });
+      }
+    } catch (e) { /* non-fatal */ }
+
     res.json(project);
   } catch (error) {
     console.error('Create project error:', error);
@@ -2929,7 +3023,11 @@ app.put('/api/projects/:projectId', authMiddleware, adminOnly, upload.array('ima
       ? parseFloat(parsedLocation.longitude)
       : (existing.location?.longitude ?? 36.8219);
 
-    const foremanId = parsedAssignedForeman?._id || parsedAssignedForeman?.id || existing.foremanId || null;
+    const previousForemanId = existing.foremanId ? String(existing.foremanId) : '';
+    const rawForemanId = parsedAssignedForeman?._id || parsedAssignedForeman?.id || existing.foremanId || null;
+    const foremanId = rawForemanId && mongoose.Types.ObjectId.isValid(String(rawForemanId))
+      ? String(rawForemanId)
+      : (existing.foremanId || null);
     const foremanName = parsedAssignedForeman?.name || existing.foremanName || '';
 
     const images = [];
@@ -2974,6 +3072,33 @@ app.put('/api/projects/:projectId', authMiddleware, adminOnly, upload.array('ima
     if (!project) {
       return res.status(404).json({ error: 'Project not found' });
     }
+
+    // Keep User.assignedProjects in sync when foreman changes
+    const nextForemanId = project.foremanId ? String(project.foremanId) : '';
+    if (previousForemanId && previousForemanId !== nextForemanId) {
+      await models.User.findByIdAndUpdate(previousForemanId, {
+        $pull: { assignedProjects: project._id }
+      });
+    }
+    if (nextForemanId) {
+      await models.User.findByIdAndUpdate(nextForemanId, {
+        $addToSet: { assignedProjects: project._id }
+      });
+      if (previousForemanId !== nextForemanId) {
+        try {
+          const foremanUser = await models.User.findById(nextForemanId).lean();
+          if (foremanUser?.email) {
+            await broadcastNotification({
+              title: 'Project assigned to you',
+              message: `Admin assigned you as foreman on "${project.name}".`,
+              targets: [foremanUser.email, 'admin'],
+              type: 'project',
+              meta: { projectId: String(project._id) }
+            });
+          }
+        } catch (e) { /* non-fatal */ }
+      }
+    }
     
     res.json(project);
   } catch (error) {
@@ -2990,10 +3115,10 @@ function generateMockEmbedding() {
 // Mark Attendance with Face Recognition
 app.post('/api/attendance/mark', authMiddleware, requireApprovedAccount, requireRole('foreman', 'admin'), async (req, res) => {
   try {
-    const { projectId, workerId, location, faceImage, livenessData } = req.body;
+    const { projectId, workerId, location, faceImage, livenessData, status, notes } = req.body;
     
-    if (!projectId || !workerId || !location) {
-      return res.status(400).json({ error: 'Missing required fields' });
+    if (!projectId || !workerId) {
+      return res.status(400).json({ error: 'Missing required fields: projectId, workerId' });
     }
     
     const foreman = await loadDbUser(req);
@@ -3009,111 +3134,92 @@ app.post('/api/attendance/mark', authMiddleware, requireApprovedAccount, require
     const worker = await models.Worker.findById(workerId);
     
     if (!worker) {
-      return res.status(404).json({ error: 'Project or worker not found' });
+      return res.status(404).json({ error: 'Worker not found' });
     }
     
     // Check if worker is assigned to this project
-    if (!worker.assignedProjects.map(String).includes(String(projectId))) {
+    if (!(worker.assignedProjects || []).map(String).includes(String(projectId))) {
       return res.status(400).json({ error: 'Worker is not assigned to this project' });
     }
-    
-    // Validate GPS location (within 50m of project)
-    if (!project.location || !project.location.latitude || !project.location.longitude) {
-      return res.status(400).json({ error: 'Project location not set' });
-    }
-    
-    const distance = calculateDistance(
-      parseFloat(location.latitude),
-      parseFloat(location.longitude),
-      project.location.latitude,
-      project.location.longitude
-    );
-    
-    if (distance > 50) {
-      return res.status(400).json({ 
-        error: 'Too far from project location', 
-        distance: Math.round(distance) 
-      });
+
+    let gps = null;
+    if (location && location.latitude != null && location.longitude != null) {
+      if (!project.location || project.location.latitude == null || project.location.longitude == null) {
+        return res.status(400).json({ error: 'Project location not set' });
+      }
+      const distance = calculateDistance(
+        parseFloat(location.latitude),
+        parseFloat(location.longitude),
+        project.location.latitude,
+        project.location.longitude
+      );
+      if (distance > (project.radius || 100)) {
+        return res.status(400).json({
+          error: 'Too far from project location',
+          distance: Math.round(distance)
+        });
+      }
+      gps = {
+        latitude: parseFloat(location.latitude),
+        longitude: parseFloat(location.longitude)
+      };
     }
     
     // Check if already marked today
-    const today = new Date().toISOString().split('T')[0];
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const end = new Date();
+    end.setHours(23, 59, 59, 999);
     const existingAttendance = await models.Attendance.findOne({
       workerId,
       projectId,
-      date: today
+      date: { $gte: start, $lte: end }
     });
     
     if (existingAttendance) {
       return res.status(400).json({ error: 'Attendance already marked for today' });
     }
-    
-    // Face recognition validation (simplified)
-    let faceMatch = false;
-    let confidence = 0;
-    
-    if (faceImage && worker.faceEmbeddings && worker.faceEmbeddings.length > 0) {
-      // In production, use actual face recognition service
-      faceMatch = true; // Mock successful match
-      confidence = 0.92; // Mock confidence score
+
+    // Face/liveness: accept registered faceData or explicit liveness pass (camera flows)
+    const hasFaceOnFile = !!(worker.faceData && (worker.faceData.faceImage || worker.faceData.faceEncoding));
+    const livenessPassed = !livenessData || livenessData.passed === true || livenessData.passed === 'true';
+    if (!hasFaceOnFile && faceImage === undefined && livenessData && !livenessPassed) {
+      return res.status(400).json({ error: 'Attendance verification failed', reasons: ['Liveness check failed'] });
     }
     
-    // Liveness validation
-    let livenessPassed = false;
-    if (livenessData) {
-      livenessPassed = livenessData.passed === true;
-    }
-    
-    // Validate minimum requirements
-    if (!faceMatch || confidence < 0.85 || !livenessPassed) {
-      return res.status(400).json({ 
-        error: 'Attendance verification failed',
-        reasons: [
-          !faceMatch ? 'Face recognition failed' : null,
-          confidence < 0.85 ? 'Low confidence match' : null,
-          !livenessPassed ? 'Liveness check failed' : null
-        ].filter(Boolean)
-      });
-    }
-    
-    // Create attendance record
+    const attendanceStatus = ['present', 'absent', 'late'].includes(String(status || '').toLowerCase())
+      ? String(status).toLowerCase()
+      : 'present';
+
     const attendance = await models.Attendance.create({
       workerId,
       projectId,
-      foremanId: foreman._id,
-      date: today,
+      date: new Date(),
       time: new Date().toTimeString().split(' ')[0],
-      status: 'present',
-      checkInLocation: {
-        type: 'Point',
-        coordinates: [parseFloat(location.longitude), parseFloat(location.latitude)]
-      },
-      faceMatch: true,
-      faceConfidence: confidence,
-      livenessPassed: true,
-      verificationMethod: 'face_recognition'
+      status: attendanceStatus,
+      gpsCoordinates: gps || undefined,
+      faceImage: faceImage || (worker.faceData && worker.faceData.faceImage) || '',
+      livenessScore: livenessPassed ? 1 : 0
     });
-    
-    // Update worker attendance stats
-    await models.Worker.findByIdAndUpdate(workerId, {
-      $push: { attendanceRecords: attendance._id },
-      $inc: { totalDaysPresent: 1 }
-    });
+
+    try {
+      await broadcastNotification({
+        title: 'Attendance marked',
+        message: `${worker.name} marked ${attendanceStatus} on ${project.name}` + (notes ? ` — ${notes}` : ''),
+        targets: ['admin', 'foreman'],
+        type: 'attendance',
+        meta: { projectId: String(project._id), workerId: String(worker._id), status: attendanceStatus }
+      });
+    } catch (e) { /* non-fatal */ }
     
     res.json({
       success: true,
-      attendance: {
-        workerName: worker.name,
-        projectName: project.name,
-        time: attendance.time,
-        confidence: confidence,
-        location: { distance: Math.round(distance) }
-      }
+      workerName: worker.name,
+      attendance
     });
-    
   } catch (error) {
-    console.error('Attendance marking error:', error);
-    res.status(500).json({ error: 'Server error during attendance marking' });
+    console.error('Mark attendance error:', error);
+    res.status(500).json({ error: 'Server error', details: error.message });
   }
 });
 
@@ -3846,6 +3952,111 @@ app.get('/api/payroll/stats', authMiddleware, requireApprovedAccount, async (req
   } catch (error) {
     console.error('Get payroll stats error:', error);
     res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Generate payroll records for a project (current calendar month)
+app.post('/api/payroll/generate', authMiddleware, requireApprovedAccount, requireRole('foreman', 'admin'), async (req, res) => {
+  try {
+    const dbUser = await loadDbUser(req);
+    if (!dbUser) return res.status(401).json({ error: 'Unauthorized' });
+    const { projectId } = req.body || {};
+    if (!projectId || !mongoose.Types.ObjectId.isValid(String(projectId))) {
+      return res.status(400).json({ error: 'Valid projectId required' });
+    }
+
+    const project = await models.EnhancedProject.findById(projectId);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    if (dbUser.role === 'foreman') {
+      const assigned = (dbUser.assignedProjects || []).map(String);
+      const isForeman = String(project.foremanId || '') === String(dbUser._id);
+      if (!isForeman && !assigned.includes(String(project._id))) {
+        return res.status(403).json({ error: 'Access denied' });
+      }
+    }
+
+    const monthStart = new Date();
+    monthStart.setDate(1);
+    monthStart.setHours(0, 0, 0, 0);
+    const monthEnd = new Date(monthStart);
+    monthEnd.setMonth(monthEnd.getMonth() + 1);
+    monthEnd.setMilliseconds(-1);
+
+    const workers = await models.Worker.find({
+      $or: [
+        { _id: { $in: project.workers || [] } },
+        { assignedProjects: project._id }
+      ],
+      status: { $ne: 'inactive' }
+    });
+
+    const attendance = await models.Attendance.find({
+      projectId: project._id,
+      date: { $gte: monthStart, $lte: monthEnd }
+    }).lean();
+
+    const byWorker = {};
+    attendance.forEach((a) => {
+      const id = String(a.workerId);
+      if (!byWorker[id]) byWorker[id] = { present: 0, absent: 0, late: 0 };
+      if (a.status === 'late') byWorker[id].late += 1;
+      else if (a.status === 'absent') byWorker[id].absent += 1;
+      else byWorker[id].present += 1;
+    });
+
+    const created = [];
+    for (const w of workers) {
+      const stats = byWorker[String(w._id)] || { present: 0, absent: 0, late: 0 };
+      const daysPaid = stats.present + stats.late;
+      const totalSalary = daysPaid * (Number(w.dailyRate) || 0);
+      const row = await models.Payroll.findOneAndUpdate(
+        {
+          workerId: w._id,
+          projectId: project._id,
+          'payPeriod.startDate': monthStart,
+          'payPeriod.endDate': monthEnd
+        },
+        {
+          $set: {
+            workerId: w._id,
+            projectId: project._id,
+            payPeriod: { startDate: monthStart, endDate: monthEnd },
+            daysPresent: stats.present,
+            daysAbsent: stats.absent,
+            daysLate: stats.late,
+            hourlyRate: Number(w.dailyRate) || 0,
+            overtimeHours: 0,
+            totalSalary,
+            deductions: 0
+          }
+        },
+        { upsert: true, new: true }
+      );
+      created.push({
+        workerId: String(w._id),
+        workerName: w.name,
+        daysPresent: stats.present,
+        daysLate: stats.late,
+        daysAbsent: stats.absent,
+        totalSalary
+      });
+    }
+
+    try {
+      await broadcastNotification({
+        title: 'Payroll generated',
+        message: `Payroll for ${project.name} (${created.length} workers) was generated by ${dbUser.name || dbUser.email}.`,
+        targets: ['admin', dbUser.email],
+        type: 'payroll',
+        meta: { projectId: String(project._id) }
+      });
+    } catch (e) { /* non-fatal */ }
+
+    res.json({ ok: true, projectId: String(project._id), period: { start: monthStart, end: monthEnd }, rows: created });
+  } catch (error) {
+    console.error('Generate payroll error:', error);
+    res.status(500).json({ error: 'Server error', details: error.message });
   }
 });
 

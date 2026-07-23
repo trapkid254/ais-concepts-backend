@@ -243,6 +243,7 @@ const portalStateSchema = new mongoose.Schema({
   adminFinancials: { type: [mongoose.Schema.Types.Mixed], default: [] },
   adminApprovals: { type: [mongoose.Schema.Types.Mixed], default: [] },
   adminPortfolio: { type: [mongoose.Schema.Types.Mixed], default: [] },
+  adminTasks: { type: [mongoose.Schema.Types.Mixed], default: [] },
   faqs: { type: [mongoose.Schema.Types.Mixed], default: [] },
   adminSettings: {
     invoiceDueDays: { type: String, default: '30' },
