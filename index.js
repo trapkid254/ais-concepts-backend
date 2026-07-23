@@ -725,13 +725,30 @@ app.get('/api/projects', async (req, res) => {
           }).populate('client', 'name email').sort({ createdAt: -1 });
           return res.json(projects);
         }
-        // Employee can see projects they're assigned to (via assignedEmployees, not site workers)
+        // Employee can see projects they're assigned to (via assignedEmployees + User.assignedProjects)
         if (decoded.role === 'employee') {
-          const projects = await models.EnhancedProject.find({
-            'assignedEmployees.employeeId': decoded.sub
-          }).populate('client', 'name email').sort({ createdAt: -1 });
+          const employeeOid = mongoose.Types.ObjectId.isValid(decoded.sub)
+            ? new mongoose.Types.ObjectId(decoded.sub)
+            : null;
+          const dbEmployee = employeeOid
+            ? await models.User.findById(employeeOid).select('assignedProjects email').lean()
+            : null;
+          const or = [];
+          if (employeeOid) {
+            or.push({ 'assignedEmployees.employeeId': employeeOid });
+            // Legacy rows may have stored employeeId as a string
+            or.push({ 'assignedEmployees.employeeId': String(decoded.sub) });
+          }
+          if (dbEmployee && Array.isArray(dbEmployee.assignedProjects) && dbEmployee.assignedProjects.length) {
+            or.push({ _id: { $in: dbEmployee.assignedProjects } });
+          }
+          const projects = or.length
+            ? await models.EnhancedProject.find({ $or: or }).populate('client', 'name email').sort({ createdAt: -1 })
+            : [];
           return res.json(projects);
         }
+        // Authenticated but unknown portal role — do not fall through to public website portfolio
+        return res.json([]);
       } catch (e) {
         // Token invalid, fall through to public
       }
@@ -1409,6 +1426,54 @@ app.get('/api/portal/bootstrap', authMiddleware, requireApprovedAccount, async (
         payload.assignments = (payload.assignments || []).filter(
           (a) => String(a.employeeEmail || '').toLowerCase() === email
         );
+        // Always merge live assignments from EnhancedProject so portal stays in sync with admin assigns
+        try {
+          const employeeOid = mongoose.Types.ObjectId.isValid(req.user.sub)
+            ? new mongoose.Types.ObjectId(req.user.sub)
+            : null;
+          const dbEmployee = employeeOid
+            ? await models.User.findById(employeeOid).select('assignedProjects email').lean()
+            : null;
+          const or = [];
+          if (employeeOid) {
+            or.push({ 'assignedEmployees.employeeId': employeeOid });
+            or.push({ 'assignedEmployees.employeeId': String(req.user.sub) });
+          }
+          if (dbEmployee?.assignedProjects?.length) {
+            or.push({ _id: { $in: dbEmployee.assignedProjects } });
+          }
+          if (or.length) {
+            const liveProjects = await models.EnhancedProject.find({ $or: or }).select(
+              'name endDate assignedEmployees'
+            ).lean();
+            const byKey = {};
+            (payload.assignments || []).forEach((a) => {
+              const k = String(a.project || '') + '|' + String(a.employeeEmail || '').toLowerCase();
+              byKey[k] = a;
+            });
+            liveProjects.forEach((p) => {
+              const entry = (p.assignedEmployees || []).find(
+                (a) =>
+                  String(a.employeeId) === String(req.user.sub) ||
+                  String(a.employeeId) === String(employeeOid)
+              );
+              const deadline = p.endDate ? new Date(p.endDate).toISOString().slice(0, 10) : '';
+              const row = {
+                project: p.name,
+                employeeEmail: email,
+                due: deadline,
+                deadline: deadline,
+                notes: (entry && entry.duties) || '',
+                projectId: String(p._id)
+              };
+              const k = String(row.project) + '|' + email;
+              byKey[k] = Object.assign({}, byKey[k] || {}, row);
+            });
+            payload.assignments = Object.keys(byKey).map((k) => byKey[k]);
+          }
+        } catch (syncErr) {
+          console.error('Employee assignment sync in bootstrap:', syncErr.message || syncErr);
+        }
         payload.employeeTimeEntries = (payload.employeeTimeEntries || []).filter(
           (e) => String(e.employeeEmail || e.email || '').toLowerCase() === email
         );
@@ -1984,6 +2049,52 @@ async function ensureDefaultAdmin() {
   console.log('Admin account synced in MongoDB (username:', adminUser + ').');
 }
 
+/** Remove demo/static "Horizon Tower" project from all stores. */
+async function removeStaticHorizonTowerProject() {
+  const nameRe = /horizon\s*towers?/i;
+  const enhanced = await models.EnhancedProject.find({ name: nameRe }).select('_id name').lean();
+  const website = await models.WebsiteProject.find({
+    $or: [{ title: nameRe }, { slug: /horizon/i }]
+  }).select('_id title slug').lean();
+  const enhancedIds = enhanced.map((p) => p._id);
+
+  if (enhancedIds.length) {
+    await models.EnhancedProject.deleteMany({ _id: { $in: enhancedIds } });
+    await models.User.updateMany({}, { $pull: { assignedProjects: { $in: enhancedIds } } });
+    await models.Attendance.deleteMany({ projectId: { $in: enhancedIds } });
+    await models.Payroll.deleteMany({ projectId: { $in: enhancedIds } });
+  }
+  if (website.length) {
+    await models.WebsiteProject.deleteMany({ _id: { $in: website.map((p) => p._id) } });
+  }
+
+  const state = await models.PortalState.findOne({ key: 'main' });
+  if (state) {
+    const scrub = (arr) =>
+      (Array.isArray(arr) ? arr : []).filter((item) => {
+        if (!item || typeof item !== 'object') return true;
+        const label = String(item.name || item.title || item.project || item.projectName || '');
+        return !nameRe.test(label);
+      });
+    state.assignments = scrub(state.assignments);
+    state.portalProjects = scrub(state.portalProjects);
+    state.clientProjects = scrub(state.clientProjects);
+    state.adminPortfolio = scrub(state.adminPortfolio);
+    state.markModified('assignments');
+    state.markModified('portalProjects');
+    state.markModified('clientProjects');
+    state.markModified('adminPortfolio');
+    await state.save();
+  }
+
+  if (enhanced.length || website.length) {
+    console.log(
+      'Removed static Horizon Tower project(s):',
+      enhanced.map((p) => p.name).concat(website.map((p) => p.title || p.slug)).join(', ')
+    );
+  }
+}
+
 mongoose
   .connect(MONGODB_URI)
   .then(async () => {
@@ -1992,6 +2103,11 @@ mongoose
       await ensureDefaultAdmin();
     } catch (e) {
       console.error('ensureDefaultAdmin:', e);
+    }
+    try {
+      await removeStaticHorizonTowerProject();
+    } catch (e) {
+      console.error('removeStaticHorizonTowerProject:', e);
     }
   })
   .catch((err) => {
@@ -2277,7 +2393,8 @@ app.post('/api/projects/:projectId/assign-employee', authMiddleware, adminOnly, 
         {
           $set: {
             'assignedEmployees.$.duties': duties || '',
-            'assignedEmployees.$.employeeName': employee.name || employee.email
+            'assignedEmployees.$.employeeName': employee.name || employee.email,
+            'assignedEmployees.$.employeeEmail': employee.email
           }
         },
         { new: true, runValidators: false }
@@ -2302,6 +2419,7 @@ app.post('/api/projects/:projectId/assign-employee', authMiddleware, adminOnly, 
             assignedEmployees: {
               employeeId: employee._id,
               employeeName: employee.name || employee.email,
+              employeeEmail: employee.email,
               duties: duties || '',
               assignedAt: new Date()
             }
