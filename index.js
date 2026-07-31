@@ -58,6 +58,9 @@ function uploadBufferToCloudinary(buffer) {
 
 const app = express();
 
+// Trust Nginx reverse proxy so Express uses the real client IP
+app.set('trust proxy', 1);
+
 // General API limiter
 const apiLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
