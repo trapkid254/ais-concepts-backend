@@ -13,6 +13,7 @@ const { Server } = require('socket.io');
 const BSON = require('bson');
 const cloudinary = require('cloudinary').v2;
 const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
 const { body, validationResult } = require('express-validator');
 
 const { signToken, authMiddleware, verifyToken, JWT_SECRET } = require('./auth');
@@ -60,6 +61,19 @@ const app = express();
 
 // Trust Nginx reverse proxy so Express uses the real client IP
 app.set('trust proxy', 1);
+
+// Security headers
+app.use(
+  helmet({
+    frameguard: false, // Nginx already sets X-Frame-Options
+    noSniff: false, // Nginx already sets X-Content-Type-Options
+    referrerPolicy: false, // Nginx already sets Referrer-Policy
+
+    crossOriginEmbedderPolicy: false, // Needed for Cloudinary and third-party resources
+
+    contentSecurityPolicy: false // We'll configure CSP separately later
+  })
+);
 
 // General API limiter
 const apiLimiter = rateLimit({
