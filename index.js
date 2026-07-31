@@ -12,6 +12,8 @@ const cookieParser = require('cookie-parser');
 const { Server } = require('socket.io');
 const BSON = require('bson');
 const cloudinary = require('cloudinary').v2;
+const rateLimit = require('express-rate-limit');
+const { body, validationResult } = require('express-validator');
 
 const { signToken, authMiddleware, verifyToken, JWT_SECRET } = require('./auth');
 const models = require('./models');
@@ -55,6 +57,44 @@ function uploadBufferToCloudinary(buffer) {
 }
 
 const app = express();
+
+// General API limiter
+const apiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 300,                 // Max requests per IP
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: {
+        success: false,
+        message: "Too many requests. Please try again later."
+    }
+});
+
+// Login limiter
+const loginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 3,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: {
+        success: false,
+        message: "Too many login attempts. Please wait 15 minutes."
+    }
+});
+
+// Validation middleware
+const validate = (req, res, next) => {
+    const errors = validationResult(req);
+
+    if (!errors.isEmpty()) {
+        return res.status(400).json({
+            success: false,
+            errors: errors.array()
+        });
+    }
+
+    next();
+};
 
 function resolveCorsOrigin() {
   const raw = process.env.CLIENT_ORIGIN;
@@ -117,6 +157,7 @@ app.use(
   })
 );
 app.use(cookieParser());
+app.use('/api/', apiLimiter);
 app.use(express.json({ limit: '50mb' }));
 
 const root = path.join(__dirname, '../frontend');
@@ -244,7 +285,12 @@ app.get('/api/users/:id', authMiddleware, adminOnly, async (req, res) => {
 });
 
 /* ——— Auth ——— */
-app.post('/api/auth/register', async (req, res) => {
+app.post('/api/auth/register', [
+    body('email').isEmail().withMessage('Invalid email format'),
+    body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
+    body('name').optional().trim().isLength({ min: 2 }).withMessage('Name must be at least 2 characters'),
+    validate
+], async (req, res) => {
   try {
     const { name, email, password } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
@@ -284,7 +330,13 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-app.post('/api/auth/register-employee', async (req, res) => {
+app.post('/api/auth/register-employee', [
+    body('email').isEmail().withMessage('Invalid email format'),
+    body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
+    body('name').optional().trim().isLength({ min: 2 }).withMessage('Name must be at least 2 characters'),
+    body('username').optional().trim().isLength({ min: 3 }).withMessage('Username must be at least 3 characters'),
+    validate
+], async (req, res) => {
   try {
     const { name, email, password, assignedProjects, phone, username } = req.body;
     if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
@@ -328,7 +380,12 @@ app.post('/api/auth/register-employee', async (req, res) => {
   }
 });
 
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', loginLimiter, [
+    body('email').optional().isEmail().withMessage('Invalid email format'),
+    body('username').optional().trim().isLength({ min: 3 }).withMessage('Username must be at least 3 characters'),
+    body('password').notEmpty().withMessage('Password is required'),
+    validate
+], async (req, res) => {
   try {
     const { email, username, password, portalType } = req.body;
     const role = portalType || 'client';
@@ -1059,7 +1116,7 @@ app.post('/api/enquiries', upload.single('file'), async (req, res) => {
 
 app.post('/api/careers/apply', async (req, res) => {
   try {
-    const { resume, portfolioType, portfolioPhotos, portfolioUrl, portfolioPdf } = req.body;
+    const { resume, portfolioType, portfolioPhotos, portfolioUrl, portfolioPdf, name, email, phone, type, campus, yearOfStudy, message } = req.body;
     
     // CV/Resume is now mandatory
     if (!resume) {
@@ -1084,6 +1141,59 @@ app.post('/api/careers/apply', async (req, res) => {
       portfolio: portfolio,
       resume: resume
     });
+
+    // Send email notification to careers@aisconcepts.com
+    const careersEmail = 'careers@aisconcepts.com';
+    const subject = `New Career Application: ${type} - ${name}`;
+    
+    let emailText = `New career application received\n\n`;
+    emailText += `Name: ${name}\n`;
+    emailText += `Email: ${email}\n`;
+    emailText += `Phone: ${phone || 'Not provided'}\n`;
+    emailText += `Application Type: ${type}\n`;
+    
+    if (campus) {
+      emailText += `Campus: ${campus}\n`;
+    }
+    if (yearOfStudy) {
+      emailText += `Year of Study: ${yearOfStudy}\n`;
+    }
+    
+    emailText += `\nMessage:\n${message || 'No message provided'}\n`;
+    emailText += `\nPortfolio Type: ${portfolioType || 'None'}`;
+    
+    if (portfolioType === 'url' && portfolioUrl) {
+      emailText += `\nPortfolio URL: ${portfolioUrl}`;
+    }
+    
+    if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+      try {
+        const nodemailer = require('nodemailer');
+        const transporter = nodemailer.createTransport({
+          host: process.env.SMTP_HOST,
+          port: parseInt(process.env.SMTP_PORT || '587', 10),
+          secure: process.env.SMTP_SECURE === 'true',
+          auth: {
+            user: process.env.SMTP_USER,
+            pass: process.env.SMTP_PASS
+          }
+        });
+        
+        await transporter.sendMail({
+          from: process.env.SMTP_FROM || process.env.SMTP_USER,
+          to: careersEmail,
+          replyTo: email,
+          subject,
+          text: emailText
+        });
+        console.log('Career application email sent to:', careersEmail);
+      } catch (mailErr) {
+        console.error('Career application email send failed:', mailErr.message);
+      }
+    } else {
+      console.log('Career application saved (configure SMTP_* env to email):', { to: careersEmail, name, email });
+    }
+    
     res.json({ ok: true });
   } catch (e) {
     console.error(e);
@@ -1613,7 +1723,12 @@ app.put('/api/portal/key/:key', authMiddleware, requireApprovedAccount, async (r
   }
 });
 
-app.put('/api/user/profile', authMiddleware, requireApprovedAccount, async (req, res) => {
+app.put('/api/user/profile', authMiddleware, requireApprovedAccount, [
+    body('name').optional().trim().isLength({ min: 2 }).withMessage('Name must be at least 2 characters'),
+    body('phone').optional().trim().isMobilePhone('any').withMessage('Invalid phone number'),
+    body('password').optional().isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
+    validate
+], async (req, res) => {
   try {
     const emailKey = (req.user.email || '').replace(/[^a-z0-9]/gi, '_');
     const profileUpdate = {
@@ -2302,7 +2417,7 @@ app.post('/api/workers/register', authMiddleware, requireApprovedAccount, requir
 });
 
 // Face Recognition Login
-app.post('/api/workers/face-login', async (req, res) => {
+app.post('/api/workers/face-login', loginLimiter, async (req, res) => {
   try {
     const { faceImage, livenessImages = [] } = req.body;
     
@@ -2961,7 +3076,12 @@ app.post('/api/projects', authMiddleware, adminOnly, upload.array('images', 10),
 });
 
 // Update Project
-app.put('/api/projects/:projectId', authMiddleware, adminOnly, upload.array('images', 10), async (req, res) => {
+app.put('/api/projects/:projectId', authMiddleware, adminOnly, upload.array('images', 10), [
+    body('title').optional().trim().isLength({ min: 3 }).withMessage('Title must be at least 3 characters'),
+    body('category').optional().trim().isLength({ min: 2 }).withMessage('Category must be at least 2 characters'),
+    body('description').optional().trim().isLength({ min: 10 }).withMessage('Description must be at least 10 characters'),
+    validate
+], async (req, res) => {
   try {
     const projectId = req.params.projectId;
     const { 
