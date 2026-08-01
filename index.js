@@ -1022,7 +1022,7 @@ app.post('/api/newsletter', async (req, res) => {
 });
 
 async function sendWebsiteContactEmail({ name, email, phone, message }) {
-  const to = process.env.CONTACT_TO_EMAIL || 'aisconceptsltd@gmail.com';
+  const to = ['info@aisconcepts.com', 'aisconcepts@gmail.com'];
   const subject = `AIS Concepts website inquiry from ${name}`;
   const text = [
     `Name: ${name}`,
