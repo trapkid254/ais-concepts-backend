@@ -15,8 +15,22 @@ const userSchema = new mongoose.Schema({
   lastLogin: { type: Date },
   // Foreman and Employee specific fields
   assignedProjects: [{ type: mongoose.Schema.Types.ObjectId, ref: 'EnhancedProject' }],
-  workerAssignments: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Worker' }]
+  workerAssignments: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Worker' }],
+  // Security fields
+  failedLoginAttempts: { type: Number, default: 0 },
+  lockedUntil: { type: Date },
+  passwordResetToken: { type: String },
+  passwordResetExpires: { type: Date },
+  emailVerificationToken: { type: String },
+  emailVerificationExpires: { type: Date },
+  emailVerified: { type: Boolean, default: false },
+  twoFactorSecret: { type: String },
+  twoFactorEnabled: { type: Boolean, default: false }
 }, { timestamps: true });
+
+// Indexes for User
+userSchema.index({ role: 1, approvalStatus: 1 });
+userSchema.index({ email: 1 });
 
 const websiteProjectSchema = new mongoose.Schema({
   slug: { type: String, unique: true, sparse: true },
@@ -85,6 +99,11 @@ const workerSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now }
 }, { timestamps: true });
 
+// Indexes for Worker
+workerSchema.index({ assignedProjects: 1 });
+workerSchema.index({ nationalId: 1 });
+workerSchema.index({ phone: 1 });
+
 // Enhanced Project Schema with GPS and Foreman
 const enhancedProjectSchema = new mongoose.Schema({
   name: { type: String, required: true },
@@ -125,6 +144,11 @@ const enhancedProjectSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now }
 }, { timestamps: true });
 
+// Indexes for EnhancedProject
+enhancedProjectSchema.index({ foremanId: 1 });
+enhancedProjectSchema.index({ client: 1 });
+enhancedProjectSchema.index({ status: 1 });
+
 // Attendance Schema with GPS and Face Recognition
 const attendanceSchema = new mongoose.Schema({
   workerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Worker', required: true },
@@ -144,6 +168,10 @@ const attendanceSchema = new mongoose.Schema({
   livenessScore: { type: Number }, // Anti-spoofing score
   checkOutTime: { type: Date }
 }, { timestamps: true });
+
+// Indexes for Attendance
+attendanceSchema.index({ projectId: 1, date: 1 });
+attendanceSchema.index({ workerId: 1, date: 1 });
 
 // Payroll Schema
 const payrollSchema = new mongoose.Schema({
@@ -334,15 +362,40 @@ const documentSchema = new mongoose.Schema({
   mimeType: { type: String, required: true },
   project: { type: mongoose.Schema.Types.ObjectId, ref: 'EnhancedProject' },
   uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  category: { 
-    type: String, 
-    enum: ['contract', 'blueprint', 'permit', 'invoice', 'report', 'other'], 
-    default: 'other' 
+  category: {
+    type: String,
+    enum: ['contract', 'blueprint', 'permit', 'invoice', 'report', 'other'],
+    default: 'other'
   },
   description: { type: String, default: '' },
   isPublic: { type: Boolean, default: false },
   createdAt: { type: Date, default: Date.now }
 }, { timestamps: true });
+
+// Security-related schemas
+const revokedTokenSchema = new mongoose.Schema({
+  jti: { type: String, required: true, unique: true },
+  expiresAt: { type: Date, required: true },
+  createdAt: { type: Date, default: Date.now }
+}, { timestamps: true });
+
+revokedTokenSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+
+const auditLogSchema = new mongoose.Schema({
+  actorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  actorEmail: { type: String, required: true },
+  action: { type: String, required: true },
+  targetType: { type: String, required: true },
+  targetId: { type: mongoose.Schema.Types.ObjectId },
+  details: { type: mongoose.Schema.Types.Mixed, default: {} },
+  ip: { type: String },
+  userAgent: { type: String },
+  timestamp: { type: Date, default: Date.now }
+}, { timestamps: true });
+
+auditLogSchema.index({ actorId: 1, timestamp: -1 });
+auditLogSchema.index({ action: 1, timestamp: -1 });
+auditLogSchema.index({ targetType: 1, targetId: 1 });
 
 module.exports = {
   User: mongoose.model('User', userSchema),
@@ -365,5 +418,7 @@ module.exports = {
   Inquiry: mongoose.model('Inquiry', inquirySchema),
   SiteStatistics: mongoose.model('SiteStatistics', siteStatisticsSchema),
   Invoice: mongoose.model('Invoice', invoiceSchema),
-  Document: mongoose.model('Document', documentSchema)
+  Document: mongoose.model('Document', documentSchema),
+  RevokedToken: mongoose.model('RevokedToken', revokedTokenSchema),
+  AuditLog: mongoose.model('AuditLog', auditLogSchema)
 };

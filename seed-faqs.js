@@ -1,16 +1,17 @@
 require('dotenv').config();
 const mongoose = require('mongoose');
 const models = require('./models');
+const logger = require('./logger');
 
 async function seedFAQs() {
   try {
     // Connect to MongoDB
     await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/ais-concepts');
-    console.log('Connected to MongoDB');
+    logger.info('Connected to MongoDB');
 
     // Clear existing FAQs
     await models.FAQ.deleteMany({});
-    console.log('Cleared existing FAQs');
+    logger.info('Cleared existing FAQs');
 
     // Sample FAQs
     const sampleFAQs = [
@@ -97,17 +98,17 @@ async function seedFAQs() {
 
     // Insert sample FAQs
     await models.FAQ.insertMany(sampleFAQs);
-    console.log('Sample FAQs created successfully');
+    logger.info('Sample FAQs created successfully');
 
     // Count created FAQs
     const count = await models.FAQ.countDocuments();
-    console.log(`Total FAQs in database: ${count}`);
+    logger.info(`Total FAQs in database: ${count}`);
 
   } catch (error) {
-    console.error('Error seeding FAQs:', error);
+    logger.error('Error seeding FAQs', { error: error.message, stack: error.stack });
   } finally {
     await mongoose.disconnect();
-    console.log('Disconnected from MongoDB');
+    logger.info('Disconnected from MongoDB');
   }
 }
 

@@ -18,12 +18,18 @@ const { body, validationResult } = require('express-validator');
 
 const { signToken, authMiddleware, verifyToken, JWT_SECRET } = require('./auth');
 const models = require('./models');
+const logger = require('./logger');
+const { csrfProtection, generateToken } = require('./security/csrf');
 const { validatePasswordPolicy } = require('./passwordPolicy');
 const {
   WEBSITE_PROJECT_CATEGORIES,
   LEGACY_WEBSITE_PROJECT_CATEGORIES,
   isValidWebsiteProjectCategory
 } = require('./projectCategories');
+const { validateImageBuffer } = require('./security/fileValidation');
+const { sendPasswordResetEmail, sendVerificationEmail } = require('./security/emailService');
+const { logAudit } = require('./security/auditLog');
+const { revokeToken, isTokenRevoked } = require('./security/tokenBlacklist');
 
 // Configure Cloudinary
 cloudinary.config({
@@ -38,7 +44,7 @@ const cloudinaryConfigured = Boolean(
   process.env.CLOUDINARY_API_SECRET
 );
 if (!cloudinaryConfigured) {
-  console.warn('⚠️ Cloudinary env vars missing (CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET). /api/upload-image will fail until set on Render.');
+  logger.warn('Cloudinary env vars missing (CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET). /api/upload-image will fail until set on Render.');
 }
 
 const MAX_IMAGE_BYTES = 50 * 1024 * 1024;
@@ -65,15 +71,69 @@ app.set('trust proxy', 1);
 // Security headers
 app.use(
   helmet({
-    frameguard: false, // Nginx already sets X-Frame-Options
-    noSniff: false, // Nginx already sets X-Content-Type-Options
-    referrerPolicy: false, // Nginx already sets Referrer-Policy
+    frameguard: { action: 'deny' },
+    noSniff: true,
+    referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+    hsts: {
+      maxAge: 31536000, // 1 year
+      includeSubDomains: true,
+      preload: true
+    },
 
     crossOriginEmbedderPolicy: false, // Needed for Cloudinary and third-party resources
 
-    contentSecurityPolicy: false // We'll configure CSP separately later
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", "https://cdn.jsdelivr.net", "https://cdnjs.cloudflare.com", "https://maps.gstatic.com", "https://www.google.com"],
+        styleSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net", "https://cdnjs.cloudflare.com", "https://fonts.googleapis.com"],
+        imgSrc: ["'self'", "data:", "https:", "https://res.cloudinary.com"],
+        fontSrc: ["'self'", "https://fonts.gstatic.com", "https://fonts.googleapis.com"],
+        connectSrc: ["'self'", "https://res.cloudinary.com"],
+        mediaSrc: ["'self'"],
+        objectSrc: ["'none'"],
+        frameSrc: ["'self'", "https://www.google.com"],
+        baseUri: ["'self'"],
+        formAction: ["'self'"],
+        frameAncestors: ["'none'"],
+        upgradeInsecureRequests: process.env.NODE_ENV === 'production'
+      }
+    }
   })
 );
+
+// HTTPS redirect middleware (only in production)
+if (process.env.NODE_ENV === 'production') {
+  app.use((req, res, next) => {
+    if (req.header('x-forwarded-proto') !== 'https') {
+      return res.redirect(`https://${req.header('host')}${req.url}`);
+    }
+    next();
+  });
+}
+
+// CSRF protection middleware
+app.use(cookieParser());
+app.use(csrfProtection);
+
+// Health check endpoint
+app.get('/health', async (req, res) => {
+  try {
+    const dbStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
+    res.json({
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      database: dbStatus,
+      uptime: process.uptime()
+    });
+  } catch (error) {
+    res.status(503).json({
+      status: 'error',
+      timestamp: new Date().toISOString(),
+      error: error.message
+    });
+  }
+});
 
 // General API limiter
 const apiLimiter = rateLimit({
@@ -99,6 +159,50 @@ const loginLimiter = rateLimit({
     }
 });
 
+// Password reset limiter - stricter than general API
+const passwordResetLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 3, // 3 requests per hour
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: "Too many password reset attempts. Please try again later."
+  }
+});
+
+// Email verification limiter
+const emailVerificationLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 5, // 5 requests per hour
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: "Too many verification attempts. Please try again later."
+  }
+});
+
+// Registration limiter
+const registrationLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 5, // 5 registrations per hour per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    message: "Too many registration attempts. Please try again later."
+  }
+});
+
+// Request ID middleware for tracing
+app.use((req, res, next) => {
+  req.id = req.headers['x-request-id'] || crypto.randomUUID();
+  res.setHeader('X-Request-ID', req.id);
+  logger.defaultMeta.requestId = req.id;
+  next();
+});
+
 // Validation middleware
 const validate = (req, res, next) => {
     const errors = validationResult(req);
@@ -115,33 +219,39 @@ const validate = (req, res, next) => {
 
 function resolveCorsOrigin() {
   const raw = process.env.CLIENT_ORIGIN;
-  console.log('CLIENT_ORIGIN raw:', raw);
+  const isProduction = process.env.NODE_ENV === 'production';
+  logger.debug('CLIENT_ORIGIN raw', { raw, isProduction });
 
-  // Always allow localhost origins for development and production
-  const allowedOrigins = [
+  // Only allow localhost origins in development, not in production
+  const localhostOrigins = [
     'http://localhost:5502',
     'http://127.0.0.1:5502',
     'http://localhost:3000',
-    'http://127.0.0.1:3000',
+    'http://127.0.0.1:3000'
+  ];
+
+  const productionOrigins = [
     'https://aisconcepts.com'
   ];
 
+  const allowedOrigins = isProduction ? productionOrigins : [...localhostOrigins, ...productionOrigins];
+
   if (!raw || raw === 'true') {
     // In development, allow localhost origins
-    console.log('Using default allowedOrigins:', allowedOrigins);
+    logger.debug('Using default allowedOrigins', { allowedOrigins });
     return allowedOrigins;
   }
 
   const parts = raw.split(',').map((s) => s.trim()).filter(Boolean);
   if (parts.length === 0) {
-    // If no specific origins configured, allow localhost
-    console.log('Using default allowedOrigins (no parts):', allowedOrigins);
+    // If no specific origins configured, use default based on environment
+    logger.debug('Using default allowedOrigins (no parts)', { allowedOrigins });
     return allowedOrigins;
   }
 
-  // Combine configured origins with localhost
-  const combined = [...parts, ...allowedOrigins];
-  console.log('Combined allowed origins:', combined);
+  // Combine configured origins with localhost only in development
+  const combined = isProduction ? [...parts, ...productionOrigins] : [...parts, ...localhostOrigins, ...productionOrigins];
+  logger.debug('Combined allowed origins', { combined });
   return combined;
 }
 
@@ -150,7 +260,7 @@ app.use((req, res, next) => {
   const allowedOrigins = resolveCorsOrigin();
   const origin = req.headers.origin;
   
-  console.log('Manual CORS - origin:', origin, 'allowed:', allowedOrigins);
+  logger.debug('Manual CORS', { origin, allowedOrigins });
   
   res.setHeader('Access-Control-Allow-Origin', origin || '*');
   res.setHeader('Access-Control-Allow-Credentials', 'true');
@@ -260,7 +370,7 @@ async function requireApprovedAccount(req, res, next) {
     }
     next();
   } catch (e) {
-    console.error(e);
+    logger.error('Error in loadDbUser middleware', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 }
@@ -285,7 +395,7 @@ app.get('/api/users', authMiddleware, adminOnly, async (req, res) => {
       .sort({ createdAt: -1 });
     res.json(users);
   } catch (error) {
-    console.error('Error fetching users:', error);
+    logger.error('Error fetching users', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -296,13 +406,13 @@ app.get('/api/users/:id', authMiddleware, adminOnly, async (req, res) => {
     if (!user) return res.status(404).json({ error: 'User not found' });
     res.json(user);
   } catch (error) {
-    console.error('Error fetching user:', error);
+    logger.error('Error fetching user', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
 
 /* ——— Auth ——— */
-app.post('/api/auth/register', [
+app.post('/api/auth/register', registrationLimiter, [
     body('email').isEmail().withMessage('Invalid email format'),
     body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
     body('name').optional().trim().isLength({ min: 2 }).withMessage('Name must be at least 2 characters'),
@@ -339,15 +449,15 @@ app.post('/api/auth/register', [
         targets: ['*']
       });
     } catch (e) {
-      console.error('Notification error:', e);
+      logger.error('Notification error', { error: e.message, stack: e.stack });
     }
   } catch (e) {
-    console.error(e);
+    logger.error('Server error in portal bootstrap', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-app.post('/api/auth/register-employee', [
+app.post('/api/auth/register-employee', registrationLimiter, [
     body('email').isEmail().withMessage('Invalid email format'),
     body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
     body('name').optional().trim().isLength({ min: 2 }).withMessage('Name must be at least 2 characters'),
@@ -389,10 +499,10 @@ app.post('/api/auth/register-employee', [
         targets: ['*']
       });
     } catch (e) {
-      console.error(e);
+      logger.error('Notification error in employee registration', { error: e.message, stack: e.stack });
     }
   } catch (e) {
-    console.error(e);
+    logger.error('Server error in employee registration', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -408,42 +518,62 @@ app.post('/api/auth/login', loginLimiter, [
     const role = portalType || 'client';
     const identifier = (email || username || '').trim();
     
-    console.log('Login attempt:', {
+    logger.info('Login attempt', {
       email,
       username,
       portalType,
       role,
-      identifier,
-      hasPassword: !!password
+      identifier
     });
     
     const user = await findUserForLogin(identifier);
-    console.log('User found:', user ? { 
+    logger.info('User found', user ? { 
       id: user._id, 
       email: user.email, 
       username: user.username, 
-      role: user.role,
-      approvalStatus: user.approvalStatus 
+      role: user.role 
     } : null);
-    
-    if (!user) return res.status(401).json({ error: 'Invalid credentials' });
 
     const passwordOk = await bcrypt.compare(password || '', user.passwordHash);
     
-    console.log('Password validation:', {
+    logger.info('Password validation', {
       passwordProvided: !!password,
       passwordOk: passwordOk,
       userRole: user.role,
-      requiredRole: role,
-      roleMatch: user.role === role
+      expectedRole: role
     });
     
     if (!passwordOk || user.role !== role) {
-      console.log('Authentication failed:', {
+      logger.warn('Authentication failed', {
         passwordFailed: !passwordOk,
         roleFailed: user.role !== role
       });
+      
+      // Increment failed login attempts
+      user.failedLoginAttempts = (user.failedLoginAttempts || 0) + 1;
+      user.lastFailedLogin = new Date();
+      
+      // Lock account after 5 failed attempts
+      if (user.failedLoginAttempts >= 5) {
+        user.lockedUntil = new Date(Date.now() + 30 * 60 * 1000); // Lock for 30 minutes
+        await user.save();
+        return res.status(423).json({ 
+          error: 'account_locked',
+          message: 'Account locked due to too many failed login attempts. Please try again in 30 minutes.' 
+        });
+      }
+      
+      await user.save();
       return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    // Check if account is locked
+    if (user.lockedUntil && user.lockedUntil > new Date()) {
+      const remainingMinutes = Math.ceil((user.lockedUntil - new Date()) / 60000);
+      return res.status(423).json({ 
+        error: 'account_locked',
+        message: `Account is locked. Please try again in ${remainingMinutes} minutes.` 
+      });
     }
 
     if (user.role !== 'admin' && user.approvalStatus === 'pending') {
@@ -453,6 +583,9 @@ app.post('/api/auth/login', loginLimiter, [
       });
     }
 
+    // Reset failed login attempts on successful login
+    user.failedLoginAttempts = 0;
+    user.lockedUntil = undefined;
     user.lastLogin = new Date();
     await user.save();
 
@@ -475,7 +608,161 @@ app.post('/api/auth/login', loginLimiter, [
       }
     });
   } catch (e) {
-    console.error(e);
+    logger.error('Server error in login', { error: e.message, stack: e.stack });
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Password reset request
+app.post('/api/auth/reset-password-request', passwordResetLimiter, [
+  body('email').isEmail().withMessage('Valid email is required'),
+  validate
+], async (req, res) => {
+  try {
+    const { email } = req.body;
+    const user = await models.User.findOne({ email: email.toLowerCase() });
+    
+    if (!user) {
+      // Don't reveal whether email exists for security
+      return res.json({ message: 'If the email exists, a reset link has been sent.' });
+    }
+
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    const resetTokenExpiry = new Date(Date.now() + 3600000); // 1 hour
+
+    user.passwordResetToken = resetToken;
+    user.passwordResetExpires = resetTokenExpiry;
+    await user.save();
+
+    await sendPasswordResetEmail(user, resetToken);
+    
+    logger.info('Password reset email sent', { email: user.email });
+    res.json({ message: 'If the email exists, a reset link has been sent.' });
+  } catch (error) {
+    logger.error('Password reset request error', { error: error.message, stack: error.stack });
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Reset password with token
+app.post('/api/auth/reset-password', [
+  body('email').isEmail().withMessage('Valid email is required'),
+  body('token').notEmpty().withMessage('Token is required'),
+  body('password').isLength({ min: 8 }).withMessage('Password must be at least 8 characters'),
+  validate
+], async (req, res) => {
+  try {
+    const { email, token, password } = req.body;
+    
+    const user = await models.User.findOne({
+      email: email.toLowerCase(),
+      passwordResetToken: token,
+      passwordResetExpires: { $gt: new Date() }
+    });
+
+    if (!user) {
+      return res.status(400).json({ error: 'Invalid or expired reset token' });
+    }
+
+    // Validate password policy
+    const passwordValidation = validatePasswordPolicy(password);
+    if (!passwordValidation.ok) {
+      return res.status(400).json({ error: passwordValidation.error });
+    }
+
+    user.passwordHash = await bcrypt.hash(password, 10);
+    user.passwordResetToken = undefined;
+    user.passwordResetExpires = undefined;
+    await user.save();
+
+    logger.info('Password reset successful', { email: user.email });
+    res.json({ message: 'Password has been reset successfully' });
+  } catch (error) {
+    logger.error('Password reset error', { error: error.message, stack: error.stack });
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Email verification request
+app.post('/api/auth/verify-email-request', emailVerificationLimiter, [
+  body('email').isEmail().withMessage('Valid email is required'),
+  validate
+], async (req, res) => {
+  try {
+    const { email } = req.body;
+    const user = await models.User.findOne({ email: email.toLowerCase() });
+    
+    if (!user) {
+      // Don't reveal whether email exists for security
+      return res.json({ message: 'If the email exists, a verification link has been sent.' });
+    }
+
+    if (user.emailVerified) {
+      return res.json({ message: 'Email is already verified.' });
+    }
+
+    const verifyToken = crypto.randomBytes(32).toString('hex');
+    const verifyTokenExpiry = new Date(Date.now() + 86400000); // 24 hours
+
+    user.emailVerificationToken = verifyToken;
+    user.emailVerificationExpires = verifyTokenExpiry;
+    await user.save();
+
+    await sendVerificationEmail(user, verifyToken);
+    
+    logger.info('Email verification sent', { email: user.email });
+    res.json({ message: 'If the email exists, a verification link has been sent.' });
+  } catch (error) {
+    logger.error('Email verification request error', { error: error.message, stack: error.stack });
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Verify email with token
+app.post('/api/auth/verify-email', [
+  body('email').isEmail().withMessage('Valid email is required'),
+  body('token').notEmpty().withMessage('Token is required'),
+  validate
+], async (req, res) => {
+  try {
+    const { email, token } = req.body;
+    
+    const user = await models.User.findOne({
+      email: email.toLowerCase(),
+      emailVerificationToken: token,
+      emailVerificationExpires: { $gt: new Date() }
+    });
+
+    if (!user) {
+      return res.status(400).json({ error: 'Invalid or expired verification token' });
+    }
+
+    user.emailVerified = true;
+    user.emailVerificationToken = undefined;
+    user.emailVerificationExpires = undefined;
+    await user.save();
+
+    logger.info('Email verification successful', { email: user.email });
+    res.json({ message: 'Email has been verified successfully' });
+  } catch (error) {
+    logger.error('Email verification error', { error: error.message, stack: error.stack });
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Logout endpoint - revoke token
+app.post('/api/auth/logout', authMiddleware, async (req, res) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (token) {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      await revokeToken(decoded.jti, decoded.exp * 1000);
+    }
+    
+    logger.info('User logged out', { userId: req.user.sub });
+    res.json({ message: 'Logged out successfully' });
+  } catch (error) {
+    logger.error('Logout error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -498,7 +785,7 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
       approvalStatus: u.approvalStatus
     });
   } catch (e) {
-    console.error(e);
+    logger.error('Server error in /api/auth/me', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -521,7 +808,7 @@ app.get('/api/admin/pending-users', authMiddleware, adminOnly, async (req, res) 
       }))
     );
   } catch (e) {
-    console.error(e);
+    logger.error('Server error in /api/admin/pending-users', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -540,11 +827,11 @@ app.post('/api/admin/users/:id/approve', authMiddleware, adminOnly, async (req, 
         targets: [String(u.email).toLowerCase()]
       });
     } catch (e) {
-      console.error(e);
+      logger.error('Notification error in user approval', { error: e.message, stack: e.stack });
     }
     res.json({ ok: true });
   } catch (e) {
-    console.error(e);
+    logger.error('Server error', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -581,7 +868,7 @@ app.get('/api/admin/users', authMiddleware, adminOnly, async (req, res) => {
       }))
     );
   } catch (e) {
-    console.error(e);
+    logger.error('Server error', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -637,7 +924,7 @@ app.put('/api/admin/users/:id', authMiddleware, adminOnly, async (req, res) => {
       }
     });
   } catch (e) {
-    console.error(e);
+    logger.error('Server error', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -653,10 +940,23 @@ app.delete('/api/admin/users/:id', authMiddleware, adminOnly, async (req, res) =
       const admins = await models.User.countDocuments({ role: 'admin' });
       if (admins <= 1) return res.status(400).json({ error: 'Cannot delete the only admin' });
     }
+    
+    // Audit log before deletion
+    await logAudit({
+      actorId: req.user.sub,
+      actorEmail: req.user.email,
+      action: 'DELETE_USER',
+      targetType: 'User',
+      targetId: target._id,
+      details: { targetEmail: target.email, targetRole: target.role },
+      ip: req.ip,
+      userAgent: req.headers['user-agent']
+    });
+    
     await models.User.deleteOne({ _id: target._id });
     res.json({ ok: true });
   } catch (e) {
-    console.error(e);
+    logger.error('Server error', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -678,10 +978,10 @@ async function deleteCloudinaryImages(imageUrls) {
       const publicId = extractPublicIdFromCloudinaryUrl(url);
       if (publicId) {
         await cloudinary.uploader.destroy(publicId);
-        console.log(`🗑️ Deleted from Cloudinary: ${publicId}`);
+        logger.info(`Deleted from Cloudinary: ${publicId}`);
       }
     } catch (err) {
-      console.error(`⚠️ Failed to delete Cloudinary image: ${err.message}`);
+      logger.error(`Failed to delete Cloudinary image`, { error: err.message, url });
     }
   }
 }
@@ -725,7 +1025,7 @@ app.post('/api/upload-image', authMiddleware, adminOnly, (req, res) => {
           details: `Maximum image size is ${MAX_IMAGE_BYTES / 1024 / 1024}MB per file`
         });
       }
-      console.error('Multer upload error:', multerErr.message);
+      logger.error('Multer upload error', { error: multerErr.message });
       return res.status(400).json({ error: 'Upload error', details: multerErr.message });
     }
 
@@ -741,9 +1041,15 @@ app.post('/api/upload-image', authMiddleware, adminOnly, (req, res) => {
         return res.status(400).json({ error: 'No image provided' });
       }
 
+      // Validate file type using magic bytes
+      const validation = await validateImageBuffer(req.file.buffer, MAX_IMAGE_BYTES);
+      if (!validation.ok) {
+        return res.status(400).json({ error: validation.error });
+      }
+
       const result = await uploadBufferToCloudinary(req.file.buffer);
 
-      console.log(`✅ Image uploaded to Cloudinary: ${result.public_id}`);
+      logger.info(`Image uploaded to Cloudinary: ${result.public_id}`);
       res.json({
         ok: true,
         url: result.secure_url,
@@ -751,7 +1057,7 @@ app.post('/api/upload-image', authMiddleware, adminOnly, (req, res) => {
         size: result.bytes
       });
     } catch (e) {
-      console.error('Cloudinary upload error:', e.message || e);
+      logger.error('Cloudinary upload error', { error: e.message || String(e) });
       res.status(500).json({ error: 'Image upload failed', details: e.message || String(e) });
     }
   });
@@ -893,25 +1199,25 @@ app.get('/api/projects', async (req, res) => {
     });
     res.json(mapped);
   } catch (e) {
-    console.error(e);
+    logger.error('Server error', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
 
 app.get('/api/projects/detail/:slug', async (req, res) => {
   try {
-    console.log(`\n📥 GET /api/projects/detail/${req.params.slug}`);
+    logger.info(`GET /api/projects/detail/${req.params.slug}`);
     const p = await models.WebsiteProject.findOne({ slug: req.params.slug }).lean();
     if (!p) {
-      console.log('❌ Project not found');
+      logger.warn(`Project not found: ${req.params.slug}`);
       return res.status(404).json({ error: 'Not found' });
     }
     
-    console.log(`✓ Found project: "${p.title}"`);
-    console.log(`  projectImages in DB: ${p.projectImages ? p.projectImages.length + ' images' : 'MISSING'}`);
+    logger.info(`Found project: "${p.title}"`);
+    logger.debug(`projectImages in DB: ${p.projectImages ? p.projectImages.length + ' images' : 'MISSING'}`);
     if (p.projectImages && p.projectImages.length > 0) {
       p.projectImages.forEach((img, i) => {
-        console.log(`    Image ${i + 1}: ${img.substring(0, 40)}... (${img.length} chars)`);
+        logger.debug(`Image ${i + 1}: ${img.substring(0, 40)}... (${img.length} chars)`);
       });
     }
     
@@ -949,10 +1255,10 @@ app.get('/api/projects/detail/:slug', async (req, res) => {
       homeSortOrder: p.homeSortOrder != null ? p.homeSortOrder : 0
     };
     
-    console.log(`📤 Returning ${response.projectImages.length} images to client`);
+    logger.debug(`Returning ${response.projectImages.length} images to client`);
     res.json(response);
   } catch (e) {
-    console.error('❌ Error fetching project detail:', e.message);
+    logger.error('Error fetching project detail', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error', details: e.message });
   }
 });
@@ -970,7 +1276,7 @@ app.get('/api/services', async (req, res) => {
       }))
     );
   } catch (e) {
-    console.error(e);
+    logger.error('Server error', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -989,7 +1295,7 @@ app.get('/api/blog', async (req, res) => {
       }))
     );
   } catch (e) {
-    console.error(e);
+    logger.error('Server error', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -1002,7 +1308,7 @@ app.get('/api/site/home', async (req, res) => {
       partners: doc && doc.partners ? doc.partners : []
     });
   } catch (e) {
-    console.error(e);
+    logger.error('Server error', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -1016,7 +1322,7 @@ app.post('/api/newsletter', async (req, res) => {
     res.json({ ok: true });
   } catch (e) {
     if (e.code === 11000) return res.json({ ok: true, note: 'already_subscribed' });
-    console.error(e);
+    logger.error('Newsletter subscription error', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -1054,10 +1360,10 @@ async function sendWebsiteContactEmail({ name, email, phone, message }) {
       });
       return true;
     } catch (mailErr) {
-      console.error('Contact email send failed:', mailErr.message);
+      logger.error('Contact email send failed', { error: mailErr.message });
     }
   }
-  console.log('Contact message saved (configure SMTP_* env to email):', { to, name, email });
+  logger.info('Contact message saved (configure SMTP_* env to email)', { to, name, email });
   return false;
 }
 
@@ -1098,7 +1404,7 @@ app.post('/api/contact', async (req, res) => {
     });
     res.json({ ok: true, message: 'Thank you. Your message has been received.' });
   } catch (e) {
-    console.error(e);
+    logger.error('Server error', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -1126,7 +1432,7 @@ app.post('/api/enquiries', upload.single('file'), async (req, res) => {
     });
     res.json({ ok: true });
   } catch (e) {
-    console.error(e);
+    logger.error('Server error', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -1203,17 +1509,17 @@ app.post('/api/careers/apply', async (req, res) => {
           subject,
           text: emailText
         });
-        console.log('Career application email sent to:', careersEmail);
+        logger.info('Career application email sent', { to: careersEmail });
       } catch (mailErr) {
-        console.error('Career application email send failed:', mailErr.message);
+        logger.error('Career application email send failed', { error: mailErr.message });
       }
     } else {
-      console.log('Career application saved (configure SMTP_* env to email):', { to: careersEmail, name, email });
+      logger.info('Career application saved (configure SMTP_* env to email)', { to: careersEmail, name, email });
     }
     
     res.json({ ok: true });
   } catch (e) {
-    console.error(e);
+    logger.error('Server error', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -1269,7 +1575,7 @@ app.get('/api/notifications', authMiddleware, requireApprovedAccount, async (req
     const unreadCount = items.filter((x) => !x.read).length;
     res.json({ items, unreadCount });
   } catch (e) {
-    console.error(e);
+    logger.error('Server error', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -1295,7 +1601,7 @@ app.post('/api/notifications/mark-read', authMiddleware, requireApprovedAccount,
     );
     res.json({ ok: true });
   } catch (e) {
-    console.error(e);
+    logger.error('Server error', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -1364,7 +1670,7 @@ app.post('/api/portal/employee-progress', authMiddleware, requireApprovedAccount
     }
     res.json({ ok: true });
   } catch (e) {
-    console.error(e);
+    logger.error('Server error', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -1395,7 +1701,7 @@ app.post('/api/admin/send-message', authMiddleware, adminOnly, async (req, res) 
     });
     res.json({ ok: true });
   } catch (e) {
-    console.error(e);
+    logger.error('Server error', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -1429,7 +1735,7 @@ app.post('/api/admin/client-progress-broadcast', authMiddleware, adminOnly, asyn
     });
     res.json({ ok: true });
   } catch (e) {
-    console.error(e);
+    logger.error('Server error', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -1473,7 +1779,7 @@ app.post('/api/portal/client-project', authMiddleware, requireApprovedAccount, a
     });
     res.json({ ok: true, id });
   } catch (e) {
-    console.error(e);
+    logger.error('Server error', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -1629,7 +1935,7 @@ app.get('/api/portal/bootstrap', authMiddleware, requireApprovedAccount, async (
             payload.assignments = Object.keys(byKey).map((k) => byKey[k]);
           }
         } catch (syncErr) {
-          console.error('Employee assignment sync in bootstrap:', syncErr.message || syncErr);
+          logger.error('Employee assignment sync in bootstrap', { error: syncErr.message || String(syncErr) });
         }
         payload.employeeTimeEntries = (payload.employeeTimeEntries || []).filter(
           (e) => String(e.employeeEmail || e.email || '').toLowerCase() === email
@@ -1693,7 +1999,7 @@ app.get('/api/portal/bootstrap', authMiddleware, requireApprovedAccount, async (
 
     res.json({ ...payload, profile });
   } catch (e) {
-    console.error(e);
+    logger.error('Server error', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -1708,7 +2014,7 @@ app.get('/api/portal/key/:key', authMiddleware, requireApprovedAccount, async (r
     if (data === undefined) data = key === 'employeeAssignmentStatus' || key === 'adminSettings' ? {} : [];
     res.json(data);
   } catch (e) {
-    console.error('GET /api/portal/key/' + key, e.message || e);
+    logger.error('GET /api/portal/key error', { key, error: e.message || String(e) });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -1735,7 +2041,7 @@ app.put('/api/portal/key/:key', authMiddleware, requireApprovedAccount, async (r
     );
     res.json({ ok: true });
   } catch (e) {
-    console.error('PUT /api/portal/key/' + key, e.message || e);
+    logger.error('PUT /api/portal/key error', { key, error: e.message || String(e) });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -1772,7 +2078,7 @@ app.put('/api/user/profile', authMiddleware, requireApprovedAccount, [
     }
     res.json({ ok: true });
   } catch (e) {
-    console.error(e);
+    logger.error('Server error', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -1826,36 +2132,27 @@ app.get('/api/admin/projects/estimate-size', authMiddleware, adminOnly, (req, re
       recommendedMaxImageSizeMB: (MAX_IMAGE_SIZE / 1024 / 1024).toFixed(1)
     });
   } catch (e) {
-    console.error('Error estimating size:', e.message);
+    logger.error('Error estimating size', { error: e.message });
     res.status(500).json({ error: 'Could not estimate size', details: e.message });
   }
 });
 
 app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
   try {
-    console.log('========================================');
-    console.log('PUT /api/admin/projects - Request received');
-    console.log('========================================');
+    logger.info('PUT /api/admin/projects - Request received');
     const bodyStr = JSON.stringify(req.body);
-    console.log('Request body size:', bodyStr.length, 'characters (~' + (bodyStr.length / 1024 / 1024).toFixed(2) + ' MB)');
+    logger.debug('Request body size', { characters: bodyStr.length, mb: (bodyStr.length / 1024 / 1024).toFixed(2) });
     
     const arr = Array.isArray(req.body) ? req.body : [];
-    console.log('Number of projects to save:', arr.length);
+    logger.info('Number of projects to save', { count: arr.length });
     
     arr.forEach(function(proj, idx) {
-      console.log(`\n📦 Project ${idx + 1}: "${proj.title}"`);
-      console.log(`   Category: ${proj.category}`);
-      console.log(`   ProjectImages count: ${proj.projectImages ? proj.projectImages.length : 'MISSING'}`);
-      if (proj.projectImages && proj.projectImages.length > 0) {
-        proj.projectImages.forEach(function(img, imgIdx) {
-          console.log(`     Image ${imgIdx + 1}: ${img.substring(0, 30)}... (${img.length} chars)`);
-        });
-      }
+      logger.debug(`Project ${idx + 1}`, { title: proj.title, category: proj.category, imageCount: proj.projectImages ? proj.projectImages.length : 'MISSING' });
     });
     
     // Validate all incoming projects before making destructive DB changes
     // With Cloudinary URLs, image sizes are no longer a concern
-    console.log(`📤 Processing ${arr.length} projects with Cloudinary image URLs`);
+    logger.info(`Processing ${arr.length} projects with Cloudinary image URLs`);
     for (let i = 0; i < arr.length; i++) {
       const p = arr[i];
       if (!p.title || !p.category) {
@@ -1877,12 +2174,12 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
       collectProjectImageUrls(p).forEach((url) => incomingUrls.add(url));
     }
 
-    console.log(`\n🗑️ Checking ${existingProjects.length} existing projects for orphaned Cloudinary images...`);
+    logger.info(`Checking ${existingProjects.length} existing projects for orphaned Cloudinary images`);
     for (const existing of existingProjects) {
       const existingUrls = collectProjectImageUrls(existing);
       const orphaned = [...existingUrls].filter((url) => !incomingUrls.has(url));
       if (orphaned.length) {
-        console.log(`   Removing ${orphaned.length} orphaned image(s) for "${existing.title}"`);
+        logger.info(`Removing ${orphaned.length} orphaned image(s) for "${existing.title}"`);
         await deleteCloudinaryImages(orphaned);
       }
     }
@@ -1892,7 +2189,7 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
 
     for (let i = 0; i < arr.length; i++) {
       const p = arr[i];
-      console.log(`\n➡️ Processing project ${i + 1}/${arr.length}: "${p.title}"`);
+      logger.info(`Processing project ${i + 1}/${arr.length}`, { title: p.title });
 
       const gallery = getWebsiteProjectGallery(p);
       const asDesignedImages = gallery.asDesignedImages;
@@ -1900,13 +2197,13 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
       const projectImages = gallery.projectImages;
 
       if (asDesignedImages.length) {
-        console.log(`   ✓ As Designed images: ${asDesignedImages.length}`);
+        logger.debug(`As Designed images: ${asDesignedImages.length}`);
       }
       if (asBuiltImages.length) {
-        console.log(`   ✓ As Built images: ${asBuiltImages.length}`);
+        logger.debug(`As Built images: ${asBuiltImages.length}`);
       }
       if (!asDesignedImages.length && !asBuiltImages.length) {
-        console.log(`   ⚠️ No gallery images provided`);
+        logger.warn('No gallery images provided');
       }
 
       // Parse metrics - only include if values are provided
@@ -1927,7 +2224,7 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
             '-' +
             (i + 1);
 
-        console.log(`   Slug: ${generatedSlug}`);
+        logger.debug(`Slug: ${generatedSlug}`);
 
         // Calculate exact BSON size before attempting to save
         const docToSave = {
@@ -1955,7 +2252,7 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
         
         const bsonBytes = BSON.serialize(docToSave).length;
         const bsonMB = (bsonBytes / 1024 / 1024).toFixed(2);
-        console.log(`   📦 Exact BSON size: ${bsonBytes} bytes (~${bsonMB} MB)`);
+        logger.debug(`Exact BSON size: ${bsonBytes} bytes (~${bsonMB} MB)`);
         
         if (bsonBytes > 16 * 1024 * 1024) {
           throw new Error(`Document size exceeds 16 MB limit (${bsonMB} MB). This includes all metadata, images, and arrays.`);
@@ -1964,20 +2261,19 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
         const savedProject = await models.WebsiteProject.create(docToSave);
 
         // Verify what was saved
-        console.log(`   ✅ Project saved with projectImages count: ${savedProject.projectImages.length}`);
+        logger.info(`Project saved with projectImages count: ${savedProject.projectImages.length}`);
       } catch (createError) {
-        console.error(`❌ Error saving project ${i}:`, createError.message, createError.code);
+        logger.error(`Error saving project ${i}`, { error: createError.message, code: createError.code });
         if (createError.code === 11000) {
           throw new Error(`Duplicate slug for project "${p.title}". Please ensure each project has a unique title.`);
         }
         throw new Error(`Failed to save project "${p.title}": ${createError.message}`);
       }
     }
-    console.log('\n✅ All projects saved successfully');
-    console.log('========================================\n');
+    logger.info('All projects saved successfully');
     res.json({ ok: true });
   } catch (e) {
-    console.error('❌ Error in PUT /api/admin/projects:', e);
+    logger.error('Error in PUT /api/admin/projects', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error', details: e.message });
   }
 });
@@ -1985,28 +2281,40 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
 app.delete('/api/admin/projects/:projectId', authMiddleware, adminOnly, async (req, res) => {
   try {
     const { projectId } = req.params;
-    console.log(`🗑️ Delete request for website project: ${projectId}`);
+    logger.info(`Delete request for website project: ${projectId}`);
     
     // Find the project
     const project = await models.WebsiteProject.findById(projectId);
     if (!project) {
       return res.status(404).json({ error: 'Project not found' });
     }
-    
+
+    // Audit log before deletion
+    await logAudit({
+      actorId: req.user.sub,
+      actorEmail: req.user.email,
+      action: 'DELETE_PROJECT',
+      targetType: 'WebsiteProject',
+      targetId: project._id,
+      details: { projectTitle: project.title },
+      ip: req.ip,
+      userAgent: req.headers['user-agent']
+    });
+
     // Delete associated Cloudinary images
     const imageUrls = [...collectProjectImageUrls(project)];
     if (imageUrls.length) {
-      console.log(`🗑️ Deleting ${imageUrls.length} Cloudinary images for project: ${project.title}`);
+      logger.info(`Deleting ${imageUrls.length} Cloudinary images for project: ${project.title}`);
       await deleteCloudinaryImages(imageUrls);
     }
     
     // Delete the project
     await models.WebsiteProject.findByIdAndDelete(projectId);
-    console.log(`✅ Project deleted: ${project.title}`);
+    logger.info(`Project deleted: ${project.title}`);
     
     res.json({ ok: true, message: `Project "${project.title}" deleted successfully` });
   } catch (e) {
-    console.error('❌ Error deleting project:', e);
+    logger.error('Error deleting project', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error', details: e.message });
   }
 });
@@ -2069,7 +2377,7 @@ app.get('/api/statistics', async (req, res) => {
       teamMembers: doc?.teamMembers || 25
     });
   } catch (e) {
-    console.error(e);
+    logger.error('Server error', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -2091,7 +2399,7 @@ app.put('/api/admin/statistics', authMiddleware, adminOnly, async (req, res) => 
     );
     res.json({ ok: true });
   } catch (e) {
-    console.error(e);
+    logger.error('Server error', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -2114,7 +2422,7 @@ app.get('/api/admin/enquiries', authMiddleware, adminOnly, async (req, res) => {
       }))
     );
   } catch (e) {
-    console.error(e);
+    logger.error('Server error', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -2141,16 +2449,16 @@ app.delete('/api/admin/enquiries/:id', authMiddleware, adminOnly, async (req, re
 
     res.json({ ok: true });
   } catch (e) {
-    console.error(e);
+    logger.error('Server error', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
 
 app.get('/api/admin/career-applications', authMiddleware, adminOnly, async (req, res) => {
   try {
-    console.log('Fetching career applications...');
+    logger.info('Fetching career applications');
     const list = await models.CareerApplication.find().sort({ createdAt: -1 }).lean();
-    console.log('Found', list.length, 'career applications');
+    logger.info(`Found ${list.length} career applications`);
     res.json(
       list.map((a) => {
         const f = a.fields || {};
@@ -2170,7 +2478,7 @@ app.get('/api/admin/career-applications', authMiddleware, adminOnly, async (req,
       })
     );
   } catch (e) {
-    console.error('Error fetching career applications:', e.message, e.stack);
+    logger.error('Error fetching career applications', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error', details: e.message });
   }
 });
@@ -2182,7 +2490,7 @@ app.delete('/api/admin/career-applications/:id', authMiddleware, adminOnly, asyn
     if (!removed) return res.status(404).json({ error: 'Application not found' });
     res.json({ ok: true });
   } catch (e) {
-    console.error(e);
+    logger.error('Server error', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -2197,115 +2505,24 @@ app.get('/api/health/db', async (req, res) => {
   try {
     const mongooseConnection = mongoose.connection;
     if (mongooseConnection.readyState !== 1) {
-      return res.status(503).json({ 
-        status: 'error', 
+      return res.status(503).json({
+        status: 'error',
         message: 'Database not connected',
-        readyState: mongooseConnection.readyState 
+        readyState: mongooseConnection.readyState
       });
     }
     // Try a simple query to verify the database is responding
     await models.User.countDocuments();
     res.json({ status: 'ok', database: 'connected' });
   } catch (e) {
-    console.error('Database health check failed:', e.message);
-    res.status(503).json({ 
-      status: 'error', 
-      message: 'Database error', 
-      details: e.message 
+    logger.error('Database health check failed', { error: e.message });
+    res.status(503).json({
+      status: 'error',
+      message: 'Database error',
+      details: e.message
     });
   }
 });
-
-const PORT = process.env.PORT || 3000;
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/ais_concepts';
-
-async function ensureDefaultAdmin() {
-  const adminEmail = (process.env.ADMIN_EMAIL || 'admin@aisconcepts.com').toLowerCase();
-  const adminUser = (process.env.ADMIN_USERNAME || 'aisconcepts').toLowerCase();
-  const adminPass = process.env.ADMIN_PASSWORD || '#Aisconcepts16';
-  const hash = await bcrypt.hash(adminPass, 10);
-  await models.User.findOneAndUpdate(
-    { $or: [{ username: adminUser }, { email: adminEmail }] },
-    {
-      $set: {
-        email: adminEmail,
-        username: adminUser,
-        passwordHash: hash,
-        role: 'admin',
-        name: 'AIS Concepts Admin',
-        approvalStatus: 'approved'
-      }
-    },
-    { upsert: true }
-  );
-  console.log('Admin account synced in MongoDB (username:', adminUser + ').');
-}
-
-/** Remove demo/static "Horizon Tower" project from all stores. */
-async function removeStaticHorizonTowerProject() {
-  const nameRe = /horizon\s*towers?/i;
-  const enhanced = await models.EnhancedProject.find({ name: nameRe }).select('_id name').lean();
-  const website = await models.WebsiteProject.find({
-    $or: [{ title: nameRe }, { slug: /horizon/i }]
-  }).select('_id title slug').lean();
-  const enhancedIds = enhanced.map((p) => p._id);
-
-  if (enhancedIds.length) {
-    await models.EnhancedProject.deleteMany({ _id: { $in: enhancedIds } });
-    await models.User.updateMany({}, { $pull: { assignedProjects: { $in: enhancedIds } } });
-    await models.Attendance.deleteMany({ projectId: { $in: enhancedIds } });
-    await models.Payroll.deleteMany({ projectId: { $in: enhancedIds } });
-  }
-  if (website.length) {
-    await models.WebsiteProject.deleteMany({ _id: { $in: website.map((p) => p._id) } });
-  }
-
-  const state = await models.PortalState.findOne({ key: 'main' });
-  if (state) {
-    const scrub = (arr) =>
-      (Array.isArray(arr) ? arr : []).filter((item) => {
-        if (!item || typeof item !== 'object') return true;
-        const label = String(item.name || item.title || item.project || item.projectName || '');
-        return !nameRe.test(label);
-      });
-    state.assignments = scrub(state.assignments);
-    state.portalProjects = scrub(state.portalProjects);
-    state.clientProjects = scrub(state.clientProjects);
-    state.adminPortfolio = scrub(state.adminPortfolio);
-    state.markModified('assignments');
-    state.markModified('portalProjects');
-    state.markModified('clientProjects');
-    state.markModified('adminPortfolio');
-    await state.save();
-  }
-
-  if (enhanced.length || website.length) {
-    console.log(
-      'Removed static Horizon Tower project(s):',
-      enhanced.map((p) => p.name).concat(website.map((p) => p.title || p.slug)).join(', ')
-    );
-  }
-}
-
-mongoose
-  .connect(MONGODB_URI)
-  .then(async () => {
-    console.log('MongoDB connected');
-    try {
-      await ensureDefaultAdmin();
-    } catch (e) {
-      console.error('ensureDefaultAdmin:', e);
-    }
-    try {
-      await removeStaticHorizonTowerProject();
-    } catch (e) {
-      console.error('removeStaticHorizonTowerProject:', e);
-    }
-  })
-  .catch((err) => {
-    console.error('MongoDB connection failed', err);
-    process.exit(1);
-  });
 
     // ===== WORKER MANAGEMENT ENDPOINTS =====
 
@@ -2358,7 +2575,7 @@ app.post('/api/workers/register', authMiddleware, requireApprovedAccount, requir
           faceUrls.push(`data:${file.mimetype};base64,${file.buffer.toString('base64')}`);
         }
       } catch (e) {
-        console.error('Face upload failed', e.message || e);
+        logger.error('Face upload failed', { error: e.message || String(e) });
       }
     }
 
@@ -2369,10 +2586,10 @@ app.post('/api/workers/register', authMiddleware, requireApprovedAccount, requir
           const uploaded = await uploadBufferToCloudinary(livenessFile.buffer);
           livenessUrl = uploaded.secure_url;
         } else {
-          livenessUrl = `data:${livenessFile.mimetype};base64,${livenessFile.buffer.toString('base64')}`;
+          livenessUrl = `data:${livenessFile.mimetype};base64,${livenessFile.buffer.toString('base64')}`);
         }
       } catch (e) {
-        console.error('Liveness upload failed', e.message || e);
+        logger.error('Liveness upload failed', { error: e.message || String(e) });
       }
     }
 
@@ -2428,7 +2645,7 @@ app.post('/api/workers/register', authMiddleware, requireApprovedAccount, requir
       }
     });
   } catch (error) {
-    console.error('Worker registration error:', error);
+    logger.error('Worker registration error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error during worker registration' });
   }
 });
@@ -2498,7 +2715,7 @@ app.post('/api/workers/face-login', loginLimiter, async (req, res) => {
       res.status(401).json({ error: 'Face not recognized' });
     }
   } catch (error) {
-    console.error('Face login error:', error);
+    logger.error('Face login error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -2536,7 +2753,7 @@ app.post('/api/projects/:projectId/assign-worker', authMiddleware, adminOnly, as
       }
     });
   } catch (error) {
-    console.error('Project assignment error:', error);
+    logger.error('Project assignment error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -2547,7 +2764,7 @@ app.post('/api/projects/:projectId/assign-employee', authMiddleware, adminOnly, 
     let { employeeId, duties, employeeEmail } = req.body;
     const projectId = req.params.projectId;
 
-    console.log('Assign employee request:', { employeeId, employeeEmail, duties, projectId });
+    logger.info('Assign employee request', { employeeId, employeeEmail, duties, projectId });
 
     if (!employeeId && employeeEmail) {
       const byEmail = await models.User.findOne({
@@ -2685,12 +2902,7 @@ app.post('/api/projects/:projectId/assign-employee', authMiddleware, adminOnly, 
       }
     });
   } catch (error) {
-    console.error('Employee assignment error:', error);
-    console.error('Error details:', {
-      message: error.message,
-      stack: error.stack,
-      name: error.name
-    });
+    logger.error('Employee assignment error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error', details: error.message });
   }
 });
@@ -2744,7 +2956,7 @@ app.delete('/api/projects/:projectId/employees/:employeeId', authMiddleware, adm
       }
     });
   } catch (error) {
-    console.error('Employee removal error:', error);
+    logger.error('Employee removal error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -2808,7 +3020,7 @@ app.post('/api/attendance/check-in', authMiddleware, async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Check-in error:', error);
+    logger.error('Check-in error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -2834,7 +3046,7 @@ app.post('/api/foreman/create', authMiddleware, adminOnly, async (req, res) => {
     }
     
     // Create foreman account
-    const hashedPassword = bcrypt.hashSync(password, 10);
+    const hashedPassword = await bcrypt.hash(password, 10);
     const foreman = await models.User.create({
       name,
       email,
@@ -2857,7 +3069,7 @@ app.post('/api/foreman/create', authMiddleware, adminOnly, async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Foreman creation error:', error);
+    logger.error('Foreman creation error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -2888,7 +3100,7 @@ app.get('/api/projects/:projectId', authMiddleware, requireApprovedAccount, asyn
     }
     res.json(project);
   } catch (error) {
-    console.error('Get project error:', error);
+    logger.error('Get project error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -2897,14 +3109,12 @@ app.get('/api/projects/:projectId', authMiddleware, requireApprovedAccount, asyn
 app.delete('/api/projects/:projectId', authMiddleware, adminOnly, async (req, res) => {
   try {
     const projectId = req.params.projectId;
-    console.log('Delete request received for projectId:', projectId);
-    console.log('Type of projectId:', typeof projectId);
+    logger.info('Delete request received for projectId', { projectId, type: typeof projectId });
     
     // Find and delete the project
     const project = await models.EnhancedProject.findById(projectId);
-    console.log('Found project:', project);
     if (!project) {
-      console.log('Project not found for ID:', projectId);
+      logger.warn('Project not found for ID', { projectId });
       return res.status(404).json({ error: 'Project not found' });
     }
     
@@ -2929,7 +3139,7 @@ app.delete('/api/projects/:projectId', authMiddleware, adminOnly, async (req, re
     
     res.json({ message: 'Project deleted successfully' });
   } catch (error) {
-    console.error('Delete project error:', error);
+    logger.error('Delete project error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -2976,7 +3186,7 @@ app.post('/api/projects', authMiddleware, adminOnly, upload.array('images', 10),
       try {
         parsedLocation = JSON.parse(location);
       } catch (e) {
-        console.error('Error parsing location:', e);
+        logger.error('Error parsing location', { error: e.message, location });
         parsedLocation = { name: location, latitude: null, longitude: null };
       }
     } else if (location) {
@@ -2987,31 +3197,25 @@ app.post('/api/projects', authMiddleware, adminOnly, upload.array('images', 10),
       try {
         parsedAssignedForeman = JSON.parse(assignedForeman);
       } catch (e) {
-        console.error('Error parsing assignedForeman:', e);
+        logger.error('Error parsing assignedForeman', { error: e.message, assignedForeman });
         parsedAssignedForeman = null;
       }
     } else if (assignedForeman) {
       parsedAssignedForeman = assignedForeman;
     }
     
-    console.log('Project creation request:', {
+    logger.info('Project creation request', {
       name,
       client,
       location: parsedLocation,
+      assignedForeman: parsedAssignedForeman,
       budget,
       deadline,
-      assignedForeman: parsedAssignedForeman,
-      progress,
-      status,
-      category,
-      moneyPaid,
-      moneyUsed,
-      moneyRemaining,
-      moneyOwed
+      description
     });
     
     if (!name || !client) {
-      console.log('Missing required fields:', { name, client });
+      logger.warn('Missing required fields', { name, client });
       return res.status(400).json({ error: 'Missing required fields: name, client' });
     }
     
@@ -3023,13 +3227,20 @@ app.post('/api/projects', authMiddleware, adminOnly, upload.array('images', 10),
       });
     }
     
+    // Validate location data - require valid coordinates
+    const latitude = parseFloat(parsedLocation?.latitude);
+    const longitude = parseFloat(parsedLocation?.longitude);
+    if (isNaN(latitude) || isNaN(longitude) || latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
+      return res.status(400).json({ error: 'Invalid location coordinates. Latitude must be between -90 and 90, longitude between -180 and 180.' });
+    }
+    
     const project = await models.EnhancedProject.create({
       name,
       client,
       location: {
         address: parsedLocation?.name || parsedLocation?.address || '',
-        latitude: parseFloat(parsedLocation?.latitude) || -1.2921,
-        longitude: parseFloat(parsedLocation?.longitude) || 36.8219
+        latitude,
+        longitude
       },
       budget: parseMoney(budget),
       startDate: deadline ? new Date(deadline) : new Date(),
@@ -3082,13 +3293,8 @@ app.post('/api/projects', authMiddleware, adminOnly, upload.array('images', 10),
 
     res.json(project);
   } catch (error) {
-    console.error('Create project error:', error);
-    console.error('Error details:', {
-      message: error.message,
-      stack: error.stack,
-      name: error.name
-    });
-    res.status(500).json({ error: 'Server error', details: error.message });
+    logger.error('Create project error', { error: error.message, stack: error.stack });
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
@@ -3125,7 +3331,7 @@ app.put('/api/projects/:projectId', authMiddleware, adminOnly, upload.array('ima
       try {
         parsedLocation = JSON.parse(location);
       } catch (e) {
-        console.error('Error parsing location:', e);
+        logger.error('Error parsing location', { error: e.message, location });
         parsedLocation = { name: location, latitude: null, longitude: null };
       }
     } else if (location) {
@@ -3136,7 +3342,7 @@ app.put('/api/projects/:projectId', authMiddleware, adminOnly, upload.array('ima
       try {
         parsedAssignedForeman = JSON.parse(assignedForeman);
       } catch (e) {
-        console.error('Error parsing assignedForeman:', e);
+        logger.error('Error parsing assignedForeman', { error: e.message, assignedForeman });
         parsedAssignedForeman = null;
       }
     } else if (assignedForeman) {
@@ -3153,12 +3359,31 @@ app.put('/api/projects/:projectId', authMiddleware, adminOnly, upload.array('ima
     }
 
     const locName = parsedLocation?.name || parsedLocation?.address || '';
-    const locLat = parsedLocation?.latitude != null && parsedLocation?.latitude !== ''
-      ? parseFloat(parsedLocation.latitude)
-      : (existing.location?.latitude ?? -1.2921);
-    const locLng = parsedLocation?.longitude != null && parsedLocation?.longitude !== ''
-      ? parseFloat(parsedLocation.longitude)
-      : (existing.location?.longitude ?? 36.8219);
+    // Validate and use new coordinates if provided, otherwise keep existing
+    let locLat, locLng;
+    if (parsedLocation?.latitude != null && parsedLocation?.latitude !== '') {
+      locLat = parseFloat(parsedLocation.latitude);
+      if (isNaN(locLat) || locLat < -90 || locLat > 90) {
+        return res.status(400).json({ error: 'Invalid latitude. Must be between -90 and 90.' });
+      }
+    } else {
+      locLat = existing.location?.latitude;
+      if (locLat == null) {
+        return res.status(400).json({ error: 'Location coordinates are required and missing from both request and existing project.' });
+      }
+    }
+    
+    if (parsedLocation?.longitude != null && parsedLocation?.longitude !== '') {
+      locLng = parseFloat(parsedLocation.longitude);
+      if (isNaN(locLng) || locLng < -180 || locLng > 180) {
+        return res.status(400).json({ error: 'Invalid longitude. Must be between -180 and 180.' });
+      }
+    } else {
+      locLng = existing.location?.longitude;
+      if (locLng == null) {
+        return res.status(400).json({ error: 'Location coordinates are required and missing from both request and existing project.' });
+      }
+    }
 
     const previousForemanId = existing.foremanId ? String(existing.foremanId) : '';
     const rawForemanId = parsedAssignedForeman?._id || parsedAssignedForeman?.id || existing.foremanId || null;
@@ -3239,7 +3464,7 @@ app.put('/api/projects/:projectId', authMiddleware, adminOnly, upload.array('ima
     
     res.json(project);
   } catch (error) {
-    console.error('Update project error:', error);
+    logger.error('Update project error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -3355,7 +3580,7 @@ app.post('/api/attendance/mark', authMiddleware, requireApprovedAccount, require
       attendance
     });
   } catch (error) {
-    console.error('Mark attendance error:', error);
+    logger.error('Mark attendance error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error', details: error.message });
   }
 });
@@ -3417,7 +3642,7 @@ app.get('/api/attendance/today', authMiddleware, requireApprovedAccount, require
     });
     
   } catch (error) {
-    console.error('Get attendance error:', error);
+    logger.error('Get attendance error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -3472,7 +3697,7 @@ app.post('/api/projects/create-with-foreman', authMiddleware, adminOnly, async (
       }
     } else {
       // Create new foreman account
-      const hashedPassword = bcrypt.hashSync('defaultPassword123', 10);
+      const hashedPassword = await bcrypt.hash('defaultPassword123', 10);
       foreman = await models.User.create({
         name: foremanName || 'New Foreman',
         email: foremanEmail || `foreman_${Date.now()}@aisconcepts.com`,
@@ -3521,7 +3746,7 @@ app.post('/api/projects/create-with-foreman', authMiddleware, adminOnly, async (
       }
     });
   } catch (error) {
-    console.error('Project creation error:', error);
+    logger.error('Project creation error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -3567,7 +3792,7 @@ app.get('/api/foreman/:foremanId/projects', authMiddleware, async (req, res) => 
       }))
     });
   } catch (error) {
-    console.error('Get foreman projects error:', error);
+    logger.error('Get foreman projects error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -3594,7 +3819,7 @@ app.delete('/api/foreman/:foremanId', authMiddleware, adminOnly, async (req, res
     
     res.json({ message: 'Foreman deleted successfully' });
   } catch (error) {
-    console.error('Delete foreman error:', error);
+    logger.error('Delete foreman error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -3631,7 +3856,7 @@ app.get('/api/documents', authMiddleware, async (req, res) => {
       };
     }));
   } catch (error) {
-    console.error('Get documents error:', error);
+    logger.error('Get documents error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -3663,7 +3888,7 @@ app.get('/api/invoices', authMiddleware, async (req, res) => {
       };
     }));
   } catch (error) {
-    console.error('Get invoices error:', error);
+    logger.error('Get invoices error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -3691,7 +3916,7 @@ app.post('/api/inquiries', authMiddleware, async (req, res) => {
     
     res.json({ success: true, message: 'Inquiry submitted successfully' });
   } catch (error) {
-    console.error('Create inquiry error:', error);
+    logger.error('Create inquiry error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -3715,7 +3940,7 @@ app.get('/api/inquiries', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Access denied' });
     }
   } catch (error) {
-    console.error('Get inquiries error:', error);
+    logger.error('Get inquiries error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -3747,7 +3972,7 @@ app.get('/api/faqs', async (req, res) => {
     
     res.json(groupedFAQs);
   } catch (error) {
-    console.error('Error fetching FAQs:', error);
+    logger.error('Error fetching FAQs', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -3770,7 +3995,7 @@ app.get('/api/faqs/:category/:id', async (req, res) => {
       date: faq.createdAt
     });
   } catch (error) {
-    console.error('Error fetching FAQ:', error);
+    logger.error('Error fetching FAQ', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -3808,7 +4033,7 @@ app.post('/api/faqs', authMiddleware, adminOnly, async (req, res) => {
       date: faq.createdAt
     });
   } catch (error) {
-    console.error('Error creating FAQ:', error);
+    logger.error('Error creating FAQ', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -3853,7 +4078,7 @@ app.put('/api/faqs/:category/:id', authMiddleware, adminOnly, async (req, res) =
       date: updatedFAQ.createdAt
     });
   } catch (error) {
-    console.error('Error updating FAQ:', error);
+    logger.error('Error updating FAQ', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -3873,26 +4098,13 @@ app.delete('/api/faqs/:category/:id', authMiddleware, adminOnly, async (req, res
     
     res.json({ message: 'FAQ deleted successfully' });
   } catch (error) {
-    console.error('Error deleting FAQ:', error);
+    logger.error('Error deleting FAQ', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-// Helper function for distance calculation (kept for compatibility; primary Haversine is defined earlier)
-function calculateDistanceMeters(lat1, lon1, lat2, lon2) {
-  const R = 6371e3;
-  const φ1 = lat1 * Math.PI / 180;
-  const φ2 = lat2 * Math.PI / 180;
-  const Δφ = (lat2 - lat1) * Math.PI / 180;
-  const Δλ = (lon2 - lon1) * Math.PI / 180;
-  const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
-          Math.cos(φ1) * Math.cos(φ2) *
-          Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
 const server = app.listen(PORT, () => {
-      console.log(`AIS Concepts backend running on port ${PORT}`);
+      logger.info(`AIS Concepts backend running on port ${PORT}`);
     });
 
 // Initialize Socket.IO for real-time notifications
@@ -3907,7 +4119,7 @@ const io = new Server(server, {
 const connectedUsers = new Map();
 
 io.on('connection', (socket) => {
-  console.log('User connected:', socket.id);
+  logger.info('User connected', { socketId: socket.id });
   
   // Handle user authentication and registration
   socket.on('register-user', (userData) => {
@@ -3920,7 +4132,7 @@ io.on('connection', (socket) => {
     const email = String(payload.email).toLowerCase();
     const role = payload.role;
     connectedUsers.set(socket.id, { email, role, socket });
-    console.log(`User registered: ${email} (${role})`);
+    logger.info('User registered', { email, role });
     socket.join(`role-${role}`);
     socket.join(`user-${email}`);
   });
@@ -3929,7 +4141,7 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     const user = connectedUsers.get(socket.id);
     if (user) {
-      console.log(`User disconnected: ${user.email} (${user.role})`);
+      logger.info('User disconnected', { email: user.email, role: user.role });
       connectedUsers.delete(socket.id);
     }
   });
@@ -3997,7 +4209,7 @@ app.get('/api/workers', authMiddleware, requireApprovedAccount, async (req, res)
       }))
     });
   } catch (error) {
-    console.error('Get workers error:', error);
+    logger.error('Get workers error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -4035,7 +4247,7 @@ app.get('/api/attendance/stats', authMiddleware, requireApprovedAccount, async (
 
     res.json({ present, absent, late, total: workers });
   } catch (error) {
-    console.error('Get attendance stats error:', error);
+    logger.error('Get attendance stats error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -4087,7 +4299,7 @@ app.get('/api/payroll/stats', authMiddleware, requireApprovedAccount, async (req
       currency: 'KSH'
     });
   } catch (error) {
-    console.error('Get payroll stats error:', error);
+    logger.error('Get payroll stats error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -4192,7 +4404,7 @@ app.post('/api/payroll/generate', authMiddleware, requireApprovedAccount, requir
 
     res.json({ ok: true, projectId: String(project._id), period: { start: monthStart, end: monthEnd }, rows: created });
   } catch (error) {
-    console.error('Generate payroll error:', error);
+    logger.error('Generate payroll error', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error', details: error.message });
   }
 });
@@ -4224,7 +4436,7 @@ app.get('/api/projects/:projectId/workers', authMiddleware, requireApprovedAccou
     }).lean();
     res.json({ workers });
   } catch (e) {
-    console.error(e);
+    logger.error('Server error', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -4292,7 +4504,7 @@ app.post('/api/invoices', authMiddleware, adminOnly, async (req, res) => {
       id: String(invoice._id)
     });
   } catch (e) {
-    console.error(e);
+    logger.error('Invoice creation error', { error: e.message || String(e), code: e.code });
     res.status(500).json({ error: e.code === 11000 ? 'Invoice number already exists' : 'Server error' });
   }
 });
@@ -4356,7 +4568,7 @@ app.post('/api/documents', authMiddleware, requireApprovedAccount, async (req, r
       size: doc.fileSize
     });
   } catch (e) {
-    console.error(e);
+    logger.error('Server error', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -4404,7 +4616,7 @@ app.post('/api/projects/:projectId/add-funds', authMiddleware, requireApprovedAc
 
     res.json({ ok: true, project });
   } catch (e) {
-    console.error(e);
+    logger.error('Server error', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -4444,7 +4656,7 @@ app.patch('/api/workers/:workerId', authMiddleware, requireApprovedAccount, requ
     await worker.save();
     res.json({ ok: true, worker });
   } catch (e) {
-    console.error(e);
+    logger.error('Server error', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -4477,7 +4689,100 @@ app.delete('/api/workers/:workerId', authMiddleware, requireApprovedAccount, req
 
     res.json({ ok: true, message: 'Worker removed' });
   } catch (e) {
-    console.error(e);
+    logger.error('Server error', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
   }
 });
+
+// Server configuration and helper functions
+const PORT = process.env.PORT || 3000;
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/ais_concepts';
+
+async function ensureDefaultAdmin() {
+  const adminEmail = (process.env.ADMIN_EMAIL || 'admin@aisconcepts.com').toLowerCase();
+  const adminUser = (process.env.ADMIN_USERNAME || 'aisconcepts').toLowerCase();
+  const adminPass = process.env.ADMIN_PASSWORD || '#Aisconcepts16';
+  const hash = await bcrypt.hash(adminPass, 10);
+  await models.User.findOneAndUpdate(
+    { $or: [{ username: adminUser }, { email: adminEmail }] },
+    {
+      $set: {
+        email: adminEmail,
+        username: adminUser,
+        passwordHash: hash,
+        role: 'admin',
+        name: 'AIS Concepts Admin',
+        approvalStatus: 'approved'
+      }
+    },
+    { upsert: true }
+  );
+  logger.info('Admin account synced in MongoDB', { username: adminUser });
+}
+
+/** Remove demo/static "Horizon Tower" project from all stores. */
+async function removeStaticHorizonTowerProject() {
+  const nameRe = /horizon\s*towers?/i;
+  const enhanced = await models.EnhancedProject.find({ name: nameRe }).select('_id name').lean();
+  const website = await models.WebsiteProject.find({
+    $or: [{ title: nameRe }, { slug: /horizon/i }]
+  }).select('_id title slug').lean();
+  const enhancedIds = enhanced.map((p) => p._id);
+
+  if (enhancedIds.length) {
+    await models.EnhancedProject.deleteMany({ _id: { $in: enhancedIds } });
+    await models.User.updateMany({}, { $pull: { assignedProjects: { $in: enhancedIds } } });
+    await models.Attendance.deleteMany({ projectId: { $in: enhancedIds } });
+    await models.Payroll.deleteMany({ projectId: { $in: enhancedIds } });
+  }
+  if (website.length) {
+    await models.WebsiteProject.deleteMany({ _id: { $in: website.map((p) => p._id) } });
+  }
+
+  const state = await models.PortalState.findOne({ key: 'main' });
+  if (state) {
+    const scrub = (arr) =>
+      (Array.isArray(arr) ? arr : []).filter((item) => {
+        if (!item || typeof item !== 'object') return true;
+        const label = String(item.name || item.title || item.project || item.projectName || '');
+        return !nameRe.test(label);
+      });
+    state.assignments = scrub(state.assignments);
+    state.portalProjects = scrub(state.portalProjects);
+    state.clientProjects = scrub(state.clientProjects);
+    state.adminPortfolio = scrub(state.adminPortfolio);
+    state.markModified('assignments');
+    state.markModified('portalProjects');
+    state.markModified('clientProjects');
+    state.markModified('adminPortfolio');
+    await state.save();
+  }
+
+  if (enhanced.length || website.length) {
+    logger.info(
+      'Removed static Horizon Tower project(s):',
+      enhanced.map((p) => p.name).concat(website.map((p) => p.title || p.slug)).join(', ')
+    );
+  }
+}
+
+// MongoDB connection and server startup
+mongoose
+  .connect(MONGODB_URI)
+  .then(async () => {
+    logger.info('MongoDB connected');
+    try {
+      await ensureDefaultAdmin();
+    } catch (e) {
+      logger.error('ensureDefaultAdmin error', { error: e.message, stack: e.stack });
+    }
+    try {
+      await removeStaticHorizonTowerProject();
+    } catch (e) {
+      logger.error('removeStaticHorizonTowerProject error', { error: e.message, stack: e.stack });
+    }
+  })
+  .catch((err) => {
+    logger.error('MongoDB connection failed', { error: err.message, stack: err.stack });
+    process.exit(1);
+  });

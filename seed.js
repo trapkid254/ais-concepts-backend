@@ -9,6 +9,7 @@ const {
   PortalState,
   SiteContent
 } = require('./models');
+const logger = require('./logger');
 
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/ais_concepts';
 
@@ -20,7 +21,7 @@ const defaultBlog = [];
 
 async function run() {
   await mongoose.connect(MONGODB_URI);
-  console.log('Connected to MongoDB');
+  logger.info('Connected to MongoDB');
 
   const hash = (p) => bcrypt.hashSync(p, 10);
 
@@ -36,19 +37,19 @@ async function run() {
     name: 'AIS Concepts Administrator',
     approvalStatus: 'approved'
   });
-  console.log('Created new admin account (username: aisconcepts, password: #Aisconcepts16).');
+  logger.info('Created new admin account', { username: 'aisconcepts' });
 
   await WebsiteProject.deleteMany({});
   await WebsiteProject.insertMany(defaultProjects);
-  console.log('Seeded website projects');
+  logger.info('Seeded website projects');
 
   await WebsiteService.deleteMany({});
   await WebsiteService.insertMany(defaultServices);
-  console.log('Seeded services');
+  logger.info('Seeded services');
 
   await BlogPost.deleteMany({});
   await BlogPost.insertMany(defaultBlog);
-  console.log('Seeded blog posts');
+  logger.info('Seeded blog posts');
 
   await PortalState.findOneAndUpdate(
     { key: 'main' },
@@ -72,7 +73,7 @@ async function run() {
     },
     { upsert: true }
   );
-  console.log('Seeded portal state');
+  logger.info('Seeded portal state');
 
   await SiteContent.findOneAndUpdate(
     { key: 'home' },
@@ -83,13 +84,13 @@ async function run() {
     },
     { upsert: true }
   );
-  console.log('Seeded site content (partners + testimonials)');
+  logger.info('Seeded site content (partners + testimonials)');
 
   await mongoose.disconnect();
-  console.log('Done.');
+  logger.info('Done.');
 }
 
 run().catch((e) => {
-  console.error(e);
+  logger.error('Error in seed.js', { error: e.message, stack: e.stack });
   process.exit(1);
 });

@@ -1,17 +1,20 @@
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
 
 function signToken(userDoc) {
+  const jti = crypto.randomBytes(16).toString('hex');
   return jwt.sign(
     {
       sub: String(userDoc._id),
       email: userDoc.email,
       role: userDoc.role,
-      name: userDoc.name || ''
+      name: userDoc.name || '',
+      jti: jti
     },
     JWT_SECRET,
-    { expiresIn: '7d' }
+    { expiresIn: '24h' }
   );
 }
 

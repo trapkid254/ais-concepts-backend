@@ -1,19 +1,20 @@
 require('dotenv').config();
 const mongoose = require('mongoose');
 const { EnhancedProject, PortalState } = require('./models');
+const logger = require('./logger');
 
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/ais_concepts';
 
 async function run() {
   await mongoose.connect(MONGODB_URI);
-  console.log('Connected to MongoDB');
+  logger.info('Connected to MongoDB');
 
   // Clear all enhanced projects
   const projectCount = await EnhancedProject.countDocuments();
-  console.log(`Found ${projectCount} projects in database`);
+  logger.info(`Found ${projectCount} projects in database`);
   
   await EnhancedProject.deleteMany({});
-  console.log('Cleared all projects from database');
+  logger.info('Cleared all projects from database');
 
   // Clear portal state projects, documents, invoices, and other data
   await PortalState.findOneAndUpdate(
@@ -27,13 +28,13 @@ async function run() {
       assignments: []
     }
   );
-  console.log('Cleared portal state projects, documents, invoices, users, and assignments');
+  logger.info('Cleared portal state projects, documents, invoices, users, and assignments');
 
   await mongoose.disconnect();
-  console.log('Done.');
+  logger.info('Done.');
 }
 
 run().catch((e) => {
-  console.error(e);
+  logger.error('Error in clear-projects-docs', { error: e.message, stack: e.stack });
   process.exit(1);
 });
