@@ -2586,7 +2586,7 @@ app.post('/api/workers/register', authMiddleware, requireApprovedAccount, requir
           const uploaded = await uploadBufferToCloudinary(livenessFile.buffer);
           livenessUrl = uploaded.secure_url;
         } else {
-          livenessUrl = `data:${livenessFile.mimetype};base64,${livenessFile.buffer.toString('base64')}`);
+          livenessUrl = `data:${livenessFile.mimetype};base64,${livenessFile.buffer.toString('base64')}`;
         }
       } catch (e) {
         logger.error('Liveness upload failed', { error: e.message || String(e) });
