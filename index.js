@@ -16,6 +16,10 @@ const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
 const { body, validationResult } = require('express-validator');
 
+// Server configuration
+const PORT = process.env.PORT || 3000;
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/ais_concepts';
+
 const { signToken, authMiddleware, verifyToken, JWT_SECRET } = require('./auth');
 const models = require('./models');
 const logger = require('./logger');
@@ -4694,9 +4698,6 @@ app.delete('/api/workers/:workerId', authMiddleware, requireApprovedAccount, req
 });
 
 // Server configuration and helper functions
-const PORT = process.env.PORT || 3000;
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/ais_concepts';
-
 async function ensureDefaultAdmin() {
   const adminEmail = (process.env.ADMIN_EMAIL || 'admin@aisconcepts.com').toLowerCase();
   const adminUser = (process.env.ADMIN_USERNAME || 'aisconcepts').toLowerCase();
