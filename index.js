@@ -95,8 +95,7 @@ app.use(
         frameSrc: ["'self'", "https://www.google.com"],
         baseUri: ["'self'"],
         formAction: ["'self'"],
-        frameAncestors: ["'none'"],
-        upgradeInsecureRequests: process.env.NODE_ENV === 'production'
+        frameAncestors: ["'none'"]
       }
     }
   })
