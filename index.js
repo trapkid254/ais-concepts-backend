@@ -234,7 +234,8 @@ function resolveCorsOrigin() {
   ];
 
   const productionOrigins = [
-    'https://aisconcepts.com'
+    'https://aisconcepts.com',
+    'https://www.aisconcepts.com'
   ];
 
   const allowedOrigins = isProduction ? productionOrigins : [...localhostOrigins, ...productionOrigins];
