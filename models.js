@@ -242,6 +242,15 @@ const careerApplicationSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
+const clientSupportTicketSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  email: { type: String, required: true },
+  subject: { type: String, required: true },
+  message: { type: String, required: true },
+  status: { type: String, enum: ['pending', 'in-progress', 'resolved'], default: 'pending' },
+  createdAt: { type: Date, default: Date.now }
+});
+
 /** Mirrors previous localStorage portal blob */
 const portalStateSchema = new mongoose.Schema({
   key: { type: String, unique: true, default: 'main' },
@@ -406,6 +415,7 @@ module.exports = {
   ContactMessage: mongoose.model('ContactMessage', contactMessageSchema),
   ProjectEnquiry: mongoose.model('ProjectEnquiry', projectEnquirySchema),
   CareerApplication: mongoose.model('CareerApplication', careerApplicationSchema),
+  ClientSupportTicket: mongoose.model('ClientSupportTicket', clientSupportTicketSchema),
   PortalState: mongoose.model('PortalState', portalStateSchema),
   UserProfile: mongoose.model('UserProfile', userProfileSchema),
   SiteContent: mongoose.model('SiteContent', siteContentSchema),

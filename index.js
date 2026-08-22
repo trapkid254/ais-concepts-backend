@@ -1332,7 +1332,7 @@ app.post('/api/newsletter', async (req, res) => {
 });
 
 async function sendWebsiteContactEmail({ name, email, phone, message }) {
-  const to = ['info@aisconcepts.com', 'aisconcepts@gmail.com'];
+  const to = ['info@aisconcepts.com', 'ivan@aisconcepts.com', 'eugene01@aisconcepts.com'];
   const subject = `AIS Concepts website inquiry from ${name}`;
   const text = [
     `Name: ${name}`,
@@ -2492,6 +2492,121 @@ app.delete('/api/admin/career-applications/:id', authMiddleware, adminOnly, asyn
     const id = req.params.id;
     const removed = await models.CareerApplication.findByIdAndDelete(id);
     if (!removed) return res.status(404).json({ error: 'Application not found' });
+    res.json({ ok: true });
+  } catch (e) {
+    logger.error('Server error', { error: e.message, stack: e.stack });
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Client support tickets API
+app.post('/api/client-support', async (req, res) => {
+  try {
+    const { name, email, subject, message } = req.body;
+    if (!name || !email || !subject || !message) {
+      return res.status(400).json({ error: 'Name, email, subject, and message are required.' });
+    }
+
+    await models.ClientSupportTicket.create({
+      name: String(name).trim(),
+      email: String(email).trim(),
+      subject: String(subject).trim(),
+      message: String(message).trim()
+    });
+
+    // Send email notification
+    if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+      try {
+        const nodemailer = require('nodemailer');
+        const transporter = nodemailer.createTransport({
+          host: process.env.SMTP_HOST,
+          port: parseInt(process.env.SMTP_PORT || '587', 10),
+          secure: process.env.SMTP_SECURE === 'true',
+          auth: {
+            user: process.env.SMTP_USER,
+            pass: process.env.SMTP_PASS
+          }
+        });
+        const to = ['info@aisconcepts.com', 'support@aisconcepts.com'];
+        const emailSubject = `Client Support Request: ${subject}`;
+        const emailText = [
+          `Name: ${name}`,
+          `Email: ${email}`,
+          '',
+          'Subject:',
+          subject,
+          '',
+          'Message:',
+          message
+        ].join('\n');
+        await transporter.sendMail({
+          from: process.env.SMTP_FROM || process.env.SMTP_USER,
+          to,
+          replyTo: email,
+          subject: emailSubject,
+          text: emailText
+        });
+        logger.info('Client support email sent', { to, name, email });
+      } catch (mailErr) {
+        logger.error('Client support email send failed', { error: mailErr.message });
+      }
+    } else {
+      logger.info('Client support ticket saved (configure SMTP_* env to email)', { to: ['info@aisconcepts.com', 'support@aisconcepts.com'], name, email });
+    }
+
+    res.json({ ok: true, message: 'Thank you. Your support request has been received.' });
+  } catch (e) {
+    logger.error('Server error', { error: e.message, stack: e.stack });
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.get('/api/admin/client-support-tickets', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    logger.info('Fetching client support tickets');
+    const list = await models.ClientSupportTicket.find().sort({ createdAt: -1 }).lean();
+    logger.info(`Found ${list.length} client support tickets`);
+    res.json(
+      list.map((t) => ({
+        id: t._id || t.id,
+        name: t.name,
+        email: t.email,
+        subject: t.subject,
+        message: t.message,
+        status: t.status,
+        date: t.createdAt
+      }))
+    );
+  } catch (e) {
+    logger.error('Error fetching client support tickets', { error: e.message, stack: e.stack });
+    res.status(500).json({ error: 'Server error', details: e.message });
+  }
+});
+
+app.patch('/api/admin/client-support-tickets/:id/status', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const { status } = req.body;
+    if (!['pending', 'in-progress', 'resolved'].includes(status)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+    const ticket = await models.ClientSupportTicket.findByIdAndUpdate(
+      req.params.id,
+      { status },
+      { new: true }
+    );
+    if (!ticket) return res.status(404).json({ error: 'Ticket not found' });
+    res.json({ ok: true, status: ticket.status });
+  } catch (e) {
+    logger.error('Server error', { error: e.message, stack: e.stack });
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.delete('/api/admin/client-support-tickets/:id', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const removed = await models.ClientSupportTicket.findByIdAndDelete(id);
+    if (!removed) return res.status(404).json({ error: 'Ticket not found' });
     res.json({ ok: true });
   } catch (e) {
     logger.error('Server error', { error: e.message, stack: e.stack });
