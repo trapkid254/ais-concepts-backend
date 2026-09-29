@@ -341,6 +341,23 @@ const siteStatisticsSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now }
 }, { timestamps: true });
 
+// Team Member Schema for About Us page
+const teamMemberSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  role: { type: String, required: true },
+  bio: { type: String, required: true },
+  photo: { type: String, default: '' },
+  specialties: [{ type: String }],
+  order: { type: Number, default: 0 },
+  isActive: { type: Boolean, default: true },
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+}, { timestamps: true });
+
+// Index for TeamMember
+teamMemberSchema.index({ order: 1, isActive: 1 });
+
 const invoiceSchema = new mongoose.Schema({
   invoiceNumber: { type: String, required: true, unique: true },
   project: { type: mongoose.Schema.Types.ObjectId, ref: 'EnhancedProject' },
@@ -427,6 +444,7 @@ module.exports = {
   FaceSession: mongoose.model('FaceSession', faceSessionSchema),
   Inquiry: mongoose.model('Inquiry', inquirySchema),
   SiteStatistics: mongoose.model('SiteStatistics', siteStatisticsSchema),
+  TeamMember: mongoose.model('TeamMember', teamMemberSchema),
   Invoice: mongoose.model('Invoice', invoiceSchema),
   Document: mongoose.model('Document', documentSchema),
   RevokedToken: mongoose.model('RevokedToken', revokedTokenSchema),

@@ -4064,6 +4064,93 @@ app.get('/api/inquiries', authMiddleware, async (req, res) => {
   }
 });
 
+/* -- Team Management -- */
+app.get('/api/team', async (req, res) => {
+  try {
+    const teamMembers = await models.TeamMember.find({ isActive: true })
+      .sort({ order: 1, createdAt: 1 })
+      .lean();
+    res.json(teamMembers);
+  } catch (error) {
+    logger.error('Error fetching team members', { error: error.message, stack: error.stack });
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/api/team', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const { name, role, bio, photo, specialties, order } = req.body;
+    
+    if (!name || !role || !bio) {
+      return res.status(400).json({ error: 'Name, role, and bio are required' });
+    }
+
+    const maxOrder = await models.TeamMember.findOne().sort({ order: -1 }).lean();
+    const nextOrder = order !== undefined ? order : (maxOrder ? maxOrder.order + 1 : 0);
+
+    const teamMember = await models.TeamMember.create({
+      name,
+      role,
+      bio,
+      photo: photo || '',
+      specialties: specialties || [],
+      order: nextOrder,
+      isActive: true,
+      createdBy: req.user.sub
+    });
+
+    logger.info('Team member created', { teamMemberId: teamMember._id, createdBy: req.user.sub });
+    res.json(teamMember);
+  } catch (error) {
+    logger.error('Error creating team member', { error: error.message, stack: error.stack });
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.put('/api/team/:id', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const { name, role, bio, photo, specialties, order, isActive } = req.body;
+    
+    const teamMember = await models.TeamMember.findById(req.params.id);
+    if (!teamMember) {
+      return res.status(404).json({ error: 'Team member not found' });
+    }
+
+    if (name !== undefined) teamMember.name = name;
+    if (role !== undefined) teamMember.role = role;
+    if (bio !== undefined) teamMember.bio = bio;
+    if (photo !== undefined) teamMember.photo = photo;
+    if (specialties !== undefined) teamMember.specialties = specialties;
+    if (order !== undefined) teamMember.order = order;
+    if (isActive !== undefined) teamMember.isActive = isActive;
+
+    await teamMember.save();
+
+    logger.info('Team member updated', { teamMemberId: teamMember._id, updatedBy: req.user.sub });
+    res.json(teamMember);
+  } catch (error) {
+    logger.error('Error updating team member', { error: error.message, stack: error.stack });
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.delete('/api/team/:id', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const teamMember = await models.TeamMember.findById(req.params.id);
+    if (!teamMember) {
+      return res.status(404).json({ error: 'Team member not found' });
+    }
+
+    await models.TeamMember.findByIdAndDelete(req.params.id);
+
+    logger.info('Team member deleted', { teamMemberId: req.params.id, deletedBy: req.user.sub });
+    res.json({ message: 'Team member deleted successfully' });
+  } catch (error) {
+    logger.error('Error deleting team member', { error: error.message, stack: error.stack });
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 /* -- FAQ Management -- */
 app.get('/api/faqs', async (req, res) => {
   try {
