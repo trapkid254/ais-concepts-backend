@@ -22,6 +22,8 @@ function csrfProtection(req, res, next) {
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
   const authHeader = req.headers.authorization || '';
   if (authHeader.startsWith('Bearer ')) return next();
+  // Exempt login endpoint from CSRF protection
+  if (req.path === '/api/auth/login') return next();
   return doubleCsrfProtection(req, res, next);
 }
 
