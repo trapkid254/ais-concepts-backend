@@ -235,7 +235,8 @@ function resolveCorsOrigin() {
 
   const productionOrigins = [
     'https://aisconcepts.com',
-    'https://www.aisconcepts.com'
+    'https://www.aisconcepts.com',
+    'https://aisconcepts.netlify.app'
   ];
 
   const allowedOrigins = isProduction ? productionOrigins : [...localhostOrigins, ...productionOrigins];
