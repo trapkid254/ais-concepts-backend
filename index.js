@@ -2366,6 +2366,24 @@ app.get('/api/vlogs', async (req, res) => {
   }
 });
 
+app.post('/api/admin/vlogs', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const { title, youtubeUrl, thumbnail, description, category } = req.body;
+    const vlog = await models.Vlog.create({
+      title,
+      youtubeUrl,
+      thumbnail: thumbnail || '',
+      description: description || '',
+      category: category || '',
+      sortOrder: 0
+    });
+    res.json(vlog);
+  } catch (error) {
+    console.error('Error creating vlog:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 app.put('/api/admin/vlogs', authMiddleware, adminOnly, async (req, res) => {
   try {
     const arr = Array.isArray(req.body) ? req.body : [];
