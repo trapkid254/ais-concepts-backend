@@ -78,6 +78,17 @@ const blogPostSchema = new mongoose.Schema({
   sortOrder: { type: Number, default: 0 }
 });
 
+const vlogSchema = new mongoose.Schema({
+  title: { type: String, required: true },
+  youtubeUrl: { type: String, required: true },
+  thumbnail: { type: String, default: '' },
+  description: { type: String, default: '' },
+  category: { type: String, default: '' },
+  sortOrder: { type: Number, default: 0 },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+});
+
 // Worker Management Schemas
 const workerSchema = new mongoose.Schema({
   nationalId: { type: String, required: true, unique: true },
@@ -428,6 +439,7 @@ module.exports = {
   WebsiteProject: mongoose.model('WebsiteProject', websiteProjectSchema),
   WebsiteService: mongoose.model('WebsiteService', websiteServiceSchema),
   BlogPost: mongoose.model('BlogPost', blogPostSchema),
+  Vlog: mongoose.model('Vlog', vlogSchema),
   NewsletterSubscriber: mongoose.model('NewsletterSubscriber', newsletterSubscriberSchema),
   ContactMessage: mongoose.model('ContactMessage', contactMessageSchema),
   ProjectEnquiry: mongoose.model('ProjectEnquiry', projectEnquirySchema),

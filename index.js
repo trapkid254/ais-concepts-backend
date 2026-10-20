@@ -2356,6 +2356,38 @@ app.put('/api/admin/blog', authMiddleware, adminOnly, async (req, res) => {
   res.json({ ok: true });
 });
 
+app.get('/api/vlogs', async (req, res) => {
+  try {
+    const vlogs = await models.Vlog.find().sort({ sortOrder: 1, createdAt: -1 });
+    res.json(vlogs);
+  } catch (error) {
+    console.error('Error fetching vlogs:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.put('/api/admin/vlogs', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const arr = Array.isArray(req.body) ? req.body : [];
+    await models.Vlog.deleteMany({});
+    for (let i = 0; i < arr.length; i++) {
+      const v = arr[i];
+      await models.Vlog.create({
+        title: v.title,
+        youtubeUrl: v.youtubeUrl,
+        thumbnail: v.thumbnail || '',
+        description: v.description || '',
+        category: v.category || '',
+        sortOrder: i
+      });
+    }
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('Error saving vlogs:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 app.put('/api/admin/site/home', authMiddleware, adminOnly, async (req, res) => {
   await models.SiteContent.findOneAndUpdate(
     { key: 'home' },
