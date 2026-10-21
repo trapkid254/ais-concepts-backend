@@ -2407,6 +2407,73 @@ app.put('/api/admin/vlogs', authMiddleware, adminOnly, async (req, res) => {
   }
 });
 
+// Hero Carousel API
+app.get('/api/hero-carousel', async (req, res) => {
+  try {
+    const carouselItems = await models.HeroCarousel.find({ isActive: true }).sort({ sortOrder: 1, createdAt: -1 });
+    res.json(carouselItems);
+  } catch (error) {
+    console.error('Error fetching hero carousel:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.post('/api/admin/hero-carousel', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const { image, title, description, projectId, sortOrder, isActive } = req.body;
+    const carouselItem = await models.HeroCarousel.create({
+      image,
+      title: title || '',
+      description: description || '',
+      projectId: projectId || null,
+      sortOrder: sortOrder || 0,
+      isActive: isActive !== undefined ? isActive : true
+    });
+    res.json(carouselItem);
+  } catch (error) {
+    console.error('Error creating hero carousel item:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.put('/api/admin/hero-carousel/:id', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const { image, title, description, projectId, sortOrder, isActive } = req.body;
+    const carouselItem = await models.HeroCarousel.findByIdAndUpdate(
+      req.params.id,
+      {
+        image,
+        title: title || '',
+        description: description || '',
+        projectId: projectId || null,
+        sortOrder: sortOrder || 0,
+        isActive: isActive !== undefined ? isActive : true
+      },
+      { new: true }
+    );
+    if (!carouselItem) {
+      return res.status(404).json({ error: 'Carousel item not found' });
+    }
+    res.json(carouselItem);
+  } catch (error) {
+    console.error('Error updating hero carousel item:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.delete('/api/admin/hero-carousel/:id', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const carouselItem = await models.HeroCarousel.findByIdAndDelete(req.params.id);
+    if (!carouselItem) {
+      return res.status(404).json({ error: 'Carousel item not found' });
+    }
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('Error deleting hero carousel item:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 app.put('/api/admin/site/home', authMiddleware, adminOnly, async (req, res) => {
   await models.SiteContent.findOneAndUpdate(
     { key: 'home' },

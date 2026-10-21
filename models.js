@@ -89,6 +89,17 @@ const vlogSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now }
 });
 
+const heroCarouselSchema = new mongoose.Schema({
+  image: { type: String, required: true },
+  title: { type: String, default: '' },
+  description: { type: String, default: '' },
+  projectId: { type: mongoose.Schema.Types.ObjectId, ref: 'WebsiteProject', default: null },
+  sortOrder: { type: Number, default: 0 },
+  isActive: { type: Boolean, default: true },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+});
+
 // Worker Management Schemas
 const workerSchema = new mongoose.Schema({
   nationalId: { type: String, required: true, unique: true },
@@ -440,6 +451,7 @@ module.exports = {
   WebsiteService: mongoose.model('WebsiteService', websiteServiceSchema),
   BlogPost: mongoose.model('BlogPost', blogPostSchema),
   Vlog: mongoose.model('Vlog', vlogSchema),
+  HeroCarousel: mongoose.model('HeroCarousel', heroCarouselSchema),
   NewsletterSubscriber: mongoose.model('NewsletterSubscriber', newsletterSubscriberSchema),
   ContactMessage: mongoose.model('ContactMessage', contactMessageSchema),
   ProjectEnquiry: mongoose.model('ProjectEnquiry', projectEnquirySchema),
