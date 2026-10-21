@@ -42,6 +42,12 @@ const websiteProjectSchema = new mongoose.Schema({
   projectImages: [{ type: String }], // Legacy / featured list (first As Designed image)
   asDesignedImages: [{ type: String }],
   asBuiltImages: [{ type: String }],
+  showcaseSections: [{
+    image: { type: String, required: true },
+    explanation: { type: String, default: '' },
+    order: { type: Number, default: 0 }
+  }],
+  galleryImages: [{ type: String }],
   description: { type: String, default: '' },
   conceptSketches: [{ type: String }],
   siteAnalysis: [{ type: String }],
@@ -49,6 +55,11 @@ const websiteProjectSchema = new mongoose.Schema({
   renderings: [{ type: String }],
   constructionPhotos: [{ type: String }],
   completedPhotos: [{ type: String }],
+  location: { type: String, default: '' },
+  projectCost: { type: String, default: '' },
+  area: { type: String, default: '' },
+  completionDate: { type: String, default: '' },
+  isPublished: { type: Boolean, default: true },
   metrics: {
     costEfficiency: { type: Number, min: 0, max: 100 },
     sustainability: { type: Number, min: 0, max: 100 },
@@ -91,6 +102,7 @@ const vlogSchema = new mongoose.Schema({
 
 const heroCarouselSchema = new mongoose.Schema({
   image: { type: String, required: true },
+  category: { type: String, default: '' },
   title: { type: String, default: '' },
   description: { type: String, default: '' },
   projectId: { type: mongoose.Schema.Types.ObjectId, ref: 'WebsiteProject', default: null },
@@ -323,7 +335,16 @@ const userProfileSchema = new mongoose.Schema({
 const siteContentSchema = new mongoose.Schema({
   key: { type: String, unique: true, default: 'home' },
   testimonials: { type: [mongoose.Schema.Types.Mixed], default: [] },
-  partners: { type: [mongoose.Schema.Types.Mixed], default: [] }
+  partners: { type: [mongoose.Schema.Types.Mixed], default: [] },
+  philosophy: {
+    image: { type: String, default: '' },
+    explanation: { type: String, default: '' }
+  },
+  approach: {
+    image: { type: String, default: '' },
+    explanation: { type: String, default: '' }
+  },
+  aboutRosterInitialized: { type: Boolean, default: false }
 });
 
 const faqSchema = new mongoose.Schema({

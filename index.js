@@ -1018,6 +1018,12 @@ function collectProjectImageUrls(p) {
   if (Array.isArray(p.projectImages)) p.projectImages.forEach((url) => { if (url) urls.add(url); });
   if (p.image) urls.add(p.image);
   if (p.heroImage) urls.add(p.heroImage);
+  if (Array.isArray(p.showcaseSections)) p.showcaseSections.forEach((section) => {
+    if (section && section.image) urls.add(section.image);
+  });
+  if (Array.isArray(p.galleryImages)) p.galleryImages.forEach((url) => {
+    if (url) urls.add(url);
+  });
   return urls;
 }
 
@@ -1074,6 +1080,35 @@ app.get('/api/project-categories', (req, res) => {
     categories: WEBSITE_PROJECT_CATEGORIES,
     legacy: LEGACY_WEBSITE_PROJECT_CATEGORIES
   });
+});
+
+app.get('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const projects = await models.WebsiteProject.find({}).sort({ sortOrder: 1, title: 1 }).lean();
+    res.json(projects.map((project) => {
+      const gallery = getWebsiteProjectGallery(project);
+      return {
+        ...project,
+        id: String(project._id),
+        image: gallery.image,
+        heroImage: gallery.heroImage,
+        projectImages: gallery.projectImages,
+        asDesignedImages: gallery.asDesignedImages,
+        asBuiltImages: gallery.asBuiltImages,
+        location: project.location || '',
+        projectCost: project.projectCost || project.cost || project.budget || '',
+        area: project.area || '',
+        completionDate: project.completionDate || '',
+        showcaseSections: Array.isArray(project.showcaseSections)
+          ? project.showcaseSections.slice().sort((a, b) => a.order - b.order)
+          : [],
+        galleryImages: Array.isArray(project.galleryImages) ? project.galleryImages : []
+      };
+    }));
+  } catch (e) {
+    logger.error('Error loading admin website projects', { error: e.message });
+    res.status(500).json({ error: 'Could not load website projects' });
+  }
 });
 
 app.get('/api/projects', async (req, res) => {
@@ -1166,7 +1201,7 @@ app.get('/api/projects', async (req, res) => {
     }
 
     // Public: return website portfolio projects
-    const list = await models.WebsiteProject.find().sort({ sortOrder: 1, title: 1 }).lean();
+    const list = await models.WebsiteProject.find({ isPublished: { $ne: false } }).sort({ sortOrder: 1, title: 1 }).lean();
     const mapped = list.map((p, i) => {
       // Prepare metrics - only include if values exist
       const metrics = {};
@@ -1189,7 +1224,14 @@ app.get('/api/projects', async (req, res) => {
         projectImages: gallery.projectImages,
         asDesignedImages: gallery.asDesignedImages,
         asBuiltImages: gallery.asBuiltImages,
+        showcaseSections: Array.isArray(p.showcaseSections) ? p.showcaseSections.slice().sort((a, b) => a.order - b.order) : [],
+        galleryImages: Array.isArray(p.galleryImages) ? p.galleryImages : [],
         description: p.description,
+        location: p.location || '',
+        projectCost: p.projectCost || p.cost || p.budget || '',
+        area: p.area || '',
+        completionDate: p.completionDate || '',
+        isPublished: p.isPublished !== false,
         conceptSketches: p.conceptSketches || [],
         siteAnalysis: p.siteAnalysis || [],
         floorPlans: p.floorPlans || [],
@@ -1212,7 +1254,7 @@ app.get('/api/projects', async (req, res) => {
 app.get('/api/projects/detail/:slug', async (req, res) => {
   try {
     logger.info(`GET /api/projects/detail/${req.params.slug}`);
-    const p = await models.WebsiteProject.findOne({ slug: req.params.slug }).lean();
+    const p = await models.WebsiteProject.findOne({ slug: req.params.slug, isPublished: { $ne: false } }).lean();
     if (!p) {
       logger.warn(`Project not found: ${req.params.slug}`);
       return res.status(404).json({ error: 'Not found' });
@@ -1247,7 +1289,14 @@ app.get('/api/projects/detail/:slug', async (req, res) => {
       projectImages: gallery.projectImages,
       asDesignedImages: gallery.asDesignedImages,
       asBuiltImages: gallery.asBuiltImages,
+      showcaseSections: Array.isArray(p.showcaseSections) ? p.showcaseSections.slice().sort((a, b) => a.order - b.order) : [],
+      galleryImages: Array.isArray(p.galleryImages) ? p.galleryImages : [],
       description: p.description,
+      location: p.location || '',
+      projectCost: p.projectCost || p.cost || p.budget || '',
+      area: p.area || '',
+      completionDate: p.completionDate || '',
+      isPublished: p.isPublished !== false,
       conceptSketches: p.conceptSketches || [],
       siteAnalysis: p.siteAnalysis || [],
       floorPlans: p.floorPlans || [],
@@ -1315,6 +1364,19 @@ app.get('/api/site/home', async (req, res) => {
   } catch (e) {
     logger.error('Server error', { error: e.message, stack: e.stack });
     res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.get('/api/site/about', async (req, res) => {
+  try {
+    const doc = await models.SiteContent.findOne({ key: 'home' }).lean();
+    res.json({
+      philosophy: doc && doc.philosophy ? doc.philosophy : { image: '', explanation: '' },
+      approach: doc && doc.approach ? doc.approach : { image: '', explanation: '' }
+    });
+  } catch (e) {
+    logger.error('Error loading About page content', { error: e.message, stack: e.stack });
+    res.status(500).json({ error: 'Could not load About page content' });
   }
 });
 
@@ -2171,10 +2233,11 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
       }
     }
 
-    // All validation passed — safe to delete existing documents and recreate
+    // All validation passed; keep existing project IDs stable while updating.
     // Only delete Cloudinary images that are no longer referenced (orphaned)
     const existingProjects = await models.WebsiteProject.find({}).lean();
     const incomingUrls = new Set();
+    const orphanedImageUrls = new Set();
     for (const p of arr) {
       collectProjectImageUrls(p).forEach((url) => incomingUrls.add(url));
     }
@@ -2183,15 +2246,10 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
     for (const existing of existingProjects) {
       const existingUrls = collectProjectImageUrls(existing);
       const orphaned = [...existingUrls].filter((url) => !incomingUrls.has(url));
-      if (orphaned.length) {
-        logger.info(`Removing ${orphaned.length} orphaned image(s) for "${existing.title}"`);
-        await deleteCloudinaryImages(orphaned);
-      }
+      orphaned.forEach((url) => orphanedImageUrls.add(url));
     }
     
-    // Now delete all projects from database
-    await models.WebsiteProject.deleteMany({});
-
+    const savedProjectIds = [];
     for (let i = 0; i < arr.length; i++) {
       const p = arr[i];
       logger.info(`Processing project ${i + 1}/${arr.length}`, { title: p.title });
@@ -2242,7 +2300,20 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
           projectImages: projectImages,
           asDesignedImages: asDesignedImages,
           asBuiltImages: asBuiltImages,
+          showcaseSections: Array.isArray(p.showcaseSections)
+            ? p.showcaseSections.map((section, sectionIndex) => ({
+                image: section.image,
+                explanation: section.explanation || '',
+                order: sectionIndex
+              }))
+            : [],
+          galleryImages: Array.isArray(p.galleryImages) ? p.galleryImages.filter(Boolean) : [],
           description: p.description || '',
+          location: p.location || '',
+          projectCost: p.projectCost || '',
+          area: p.area || '',
+          completionDate: p.completionDate || '',
+          isPublished: p.isPublished !== false,
           conceptSketches: p.conceptSketches || [],
           siteAnalysis: p.siteAnalysis || [],
           floorPlans: p.floorPlans || [],
@@ -2263,7 +2334,18 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
           throw new Error(`Document size exceeds 16 MB limit (${bsonMB} MB). This includes all metadata, images, and arrays.`);
         }
 
-        const savedProject = await models.WebsiteProject.create(docToSave);
+        const existingId = typeof p.id === 'string' && /^[a-f\d]{24}$/i.test(p.id) ? p.id : null;
+        const savedProject = existingId
+          ? await models.WebsiteProject.findByIdAndUpdate(
+              existingId,
+              { $set: docToSave },
+              { new: true, runValidators: true }
+            )
+          : await models.WebsiteProject.create(docToSave);
+        if (!savedProject) {
+          throw new Error(`Project "${p.title}" no longer exists; refresh the project list and try again.`);
+        }
+        savedProjectIds.push(savedProject._id);
 
         // Verify what was saved
         logger.info(`Project saved with projectImages count: ${savedProject.projectImages.length}`);
@@ -2274,6 +2356,11 @@ app.put('/api/admin/projects', authMiddleware, adminOnly, async (req, res) => {
         }
         throw new Error(`Failed to save project "${p.title}": ${createError.message}`);
       }
+    }
+    await models.WebsiteProject.deleteMany({ _id: { $nin: savedProjectIds } });
+    if (orphanedImageUrls.size) {
+      logger.info(`Removing ${orphanedImageUrls.size} orphaned Cloudinary image(s) after project persistence`);
+      await deleteCloudinaryImages([...orphanedImageUrls]);
     }
     logger.info('All projects saved successfully');
     res.json({ ok: true });
@@ -2420,9 +2507,10 @@ app.get('/api/hero-carousel', async (req, res) => {
 
 app.post('/api/admin/hero-carousel', authMiddleware, adminOnly, async (req, res) => {
   try {
-    const { image, title, description, projectId, sortOrder, isActive } = req.body;
+    const { image, category, title, description, projectId, sortOrder, isActive } = req.body;
     const carouselItem = await models.HeroCarousel.create({
       image,
+      category: category || '',
       title: title || '',
       description: description || '',
       projectId: projectId || null,
@@ -2438,11 +2526,12 @@ app.post('/api/admin/hero-carousel', authMiddleware, adminOnly, async (req, res)
 
 app.put('/api/admin/hero-carousel/:id', authMiddleware, adminOnly, async (req, res) => {
   try {
-    const { image, title, description, projectId, sortOrder, isActive } = req.body;
+    const { image, category, title, description, projectId, sortOrder, isActive } = req.body;
     const carouselItem = await models.HeroCarousel.findByIdAndUpdate(
       req.params.id,
       {
         image,
+        category: category || '',
         title: title || '',
         description: description || '',
         projectId: projectId || null,
@@ -2484,6 +2573,29 @@ app.put('/api/admin/site/home', authMiddleware, adminOnly, async (req, res) => {
     { upsert: true }
   );
   res.json({ ok: true });
+});
+
+app.put('/api/admin/site/about', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const sanitizeSection = (section) => ({
+      image: typeof section?.image === 'string' ? section.image : '',
+      explanation: typeof section?.explanation === 'string' ? section.explanation : ''
+    });
+    const doc = await models.SiteContent.findOneAndUpdate(
+      { key: 'home' },
+      {
+        $set: {
+          philosophy: sanitizeSection(req.body.philosophy),
+          approach: sanitizeSection(req.body.approach)
+        }
+      },
+      { upsert: true, new: true, runValidators: true }
+    );
+    res.json({ ok: true, philosophy: doc.philosophy, approach: doc.approach });
+  } catch (e) {
+    logger.error('Error saving About page content', { error: e.message, stack: e.stack });
+    res.status(500).json({ error: 'Could not save About page content' });
+  }
 });
 
 // Site Statistics Endpoints
@@ -4183,12 +4295,83 @@ app.get('/api/inquiries', authMiddleware, async (req, res) => {
 });
 
 /* -- Team Management -- */
+const ABOUT_TEAM_ROSTER = [
+  { role: 'Lead Architect', name: 'Arch Ivan Machanule', order: 0 },
+  { role: 'Design/Project Management Lead', name: 'Eugene Muchangi', order: 1 },
+  { role: 'Costing Lead', name: 'Cosmas Meli', order: 2 },
+  { role: 'Landscape Design Lead', name: 'Eng. Kennedy Kithia', order: 3 },
+  { role: 'Engineering Lead', name: 'Kepha Simon', order: 4 },
+  { role: 'Interior Designer', name: 'Delvin Alemba', order: 5 },
+  { role: 'IT/Support', name: 'Griffins', order: 6 },
+  { role: 'Socials and Visuals', name: 'Team Member', order: 7 }
+];
+
+app.get('/api/admin/about/team', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const siteContent = await models.SiteContent.findOne({ key: 'home' }).select('aboutRosterInitialized').lean();
+    if (!siteContent || !siteContent.aboutRosterInitialized) {
+      const legacyMembers = await models.TeamMember.find({})
+        .sort({ order: 1, createdAt: 1 })
+        .limit(ABOUT_TEAM_ROSTER.length)
+        .lean();
+      for (let i = 0; i < ABOUT_TEAM_ROSTER.length; i++) {
+        const member = ABOUT_TEAM_ROSTER[i];
+        if (legacyMembers[i]) {
+          await models.TeamMember.updateOne(
+            { _id: legacyMembers[i]._id },
+            { $set: { name: member.name, role: member.role, order: member.order, isActive: true } }
+          );
+        } else {
+          await models.TeamMember.create({
+            ...member,
+            bio: 'Part of the AIS Concepts multidisciplinary design team.',
+            photo: '',
+            specialties: [],
+            isActive: true,
+            createdBy: req.user.sub
+          });
+        }
+      }
+      await models.SiteContent.findOneAndUpdate(
+        { key: 'home' },
+        { $set: { aboutRosterInitialized: true } },
+        { upsert: true }
+      );
+    } else {
+      for (const member of ABOUT_TEAM_ROSTER) {
+        const existing = await models.TeamMember.findOne({ role: member.role }).select('_id').lean();
+        if (existing) {
+          await models.TeamMember.updateOne({ _id: existing._id }, { $set: { order: member.order, isActive: true } });
+        } else {
+          await models.TeamMember.create({
+            ...member,
+            bio: 'Part of the AIS Concepts multidisciplinary design team.',
+            photo: '',
+            specialties: [],
+            isActive: true,
+            createdBy: req.user.sub
+          });
+        }
+      }
+    }
+    const roster = await models.TeamMember.find({
+      role: { $in: ABOUT_TEAM_ROSTER.map((member) => member.role) }
+    }).sort({ order: 1 }).lean();
+    res.json(roster);
+  } catch (error) {
+    logger.error('Error loading About page team roster', { error: error.message, stack: error.stack });
+    res.status(500).json({ error: 'Could not load About page team roster' });
+  }
+});
+
 app.get('/api/team', async (req, res) => {
   try {
+    const siteContent = await models.SiteContent.findOne({ key: 'home' }).select('aboutRosterInitialized').lean();
+    const aboutRosterInitialized = !!(siteContent && siteContent.aboutRosterInitialized);
     const teamMembers = await models.TeamMember.find({ isActive: true })
       .sort({ order: 1, createdAt: 1 })
       .lean();
-    res.json(teamMembers);
+    res.json(teamMembers.map((member) => ({ ...member, aboutRosterInitialized })));
   } catch (error) {
     logger.error('Error fetching team members', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error' });
