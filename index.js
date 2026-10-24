@@ -1041,7 +1041,10 @@ app.post('/api/upload-image', authMiddleware, adminOnly, (req, res) => {
     }
 
     try {
+      logger.info('Image upload attempt', { fileSize: req.file ? req.file.size : 'no file', mimetype: req.file ? req.file.mimetype : 'no file' });
+
       if (!cloudinaryConfigured) {
+        logger.error('Cloudinary not configured', { cloudName: !!process.env.CLOUDINARY_CLOUD_NAME, apiKey: !!process.env.CLOUDINARY_API_KEY, apiSecret: !!process.env.CLOUDINARY_API_SECRET });
         return res.status(503).json({
           error: 'Image upload not configured',
           details: 'Cloudinary credentials are missing on the server. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET in Render environment variables.'
@@ -1058,6 +1061,7 @@ app.post('/api/upload-image', authMiddleware, adminOnly, (req, res) => {
         return res.status(400).json({ error: validation.error });
       }
 
+      logger.info('Uploading to Cloudinary...');
       const result = await uploadBufferToCloudinary(req.file.buffer);
 
       logger.info(`Image uploaded to Cloudinary: ${result.public_id}`);
@@ -1068,7 +1072,7 @@ app.post('/api/upload-image', authMiddleware, adminOnly, (req, res) => {
         size: result.bytes
       });
     } catch (e) {
-      logger.error('Cloudinary upload error', { error: e.message || String(e) });
+      logger.error('Cloudinary upload error', { error: e.message || String(e), stack: e.stack });
       res.status(500).json({ error: 'Image upload failed', details: e.message || String(e) });
     }
   });
