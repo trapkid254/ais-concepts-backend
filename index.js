@@ -1436,7 +1436,7 @@ app.post('/api/newsletter', async (req, res) => {
 });
 
 async function sendWebsiteContactEmail({ name, email, phone, message }) {
-  const to = ['info@aisconcepts.com', 'ivan@aisconcepts.com', 'eugene01@aisconcepts.com'];
+  const to = ['info@aisconcepts.com', 'ivan@aisconcepts.com', 'eugene@aisconcepts.com', 'meli@aisconcepts.com'];
   const subject = `AIS Concepts website inquiry from ${name}`;
   const text = [
     `Name: ${name}`,
