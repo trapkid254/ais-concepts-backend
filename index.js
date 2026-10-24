@@ -4378,6 +4378,19 @@ app.get('/api/team', async (req, res) => {
   }
 });
 
+app.get('/api/team/:id', authMiddleware, adminOnly, async (req, res) => {
+  try {
+    const teamMember = await models.TeamMember.findById(req.params.id).lean();
+    if (!teamMember) {
+      return res.status(404).json({ error: 'Team member not found' });
+    }
+    res.json(teamMember);
+  } catch (error) {
+    logger.error('Error fetching team member', { error: error.message, stack: error.stack });
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 app.post('/api/team', authMiddleware, adminOnly, async (req, res) => {
   try {
     const { name, role, bio, photo, specialties, order } = req.body;
