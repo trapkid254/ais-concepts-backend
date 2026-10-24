@@ -54,6 +54,24 @@ if (!cloudinaryConfigured) {
 const MAX_IMAGE_BYTES = 50 * 1024 * 1024;
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_IMAGE_BYTES } });
 
+// Local storage fallback for uploads
+const localUpload = multer({
+  storage: multer.diskStorage({
+    destination: function (req, file, cb) {
+      const uploadDir = path.join(__dirname, '../uploads');
+      if (!fs.existsSync(uploadDir)) {
+        fs.mkdirSync(uploadDir, { recursive: true });
+      }
+      cb(null, uploadDir);
+    },
+    filename: function (req, file, cb) {
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+      cb(null, uniqueSuffix + path.extname(file.originalname));
+    }
+  }),
+  limits: { fileSize: MAX_IMAGE_BYTES }
+});
+
 function uploadBufferToCloudinary(buffer) {
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
@@ -294,6 +312,7 @@ app.use(express.json({ limit: '50mb' }));
 
 const root = path.join(__dirname, '../frontend');
 app.use(express.static(root));
+app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
 function adminOnly(req, res, next) {
   if (!req.user || req.user.role !== 'admin') {
@@ -1043,14 +1062,6 @@ app.post('/api/upload-image', authMiddleware, adminOnly, (req, res) => {
     try {
       logger.info('Image upload attempt', { fileSize: req.file ? req.file.size : 'no file', mimetype: req.file ? req.file.mimetype : 'no file' });
 
-      if (!cloudinaryConfigured) {
-        logger.error('Cloudinary not configured', { cloudName: !!process.env.CLOUDINARY_CLOUD_NAME, apiKey: !!process.env.CLOUDINARY_API_KEY, apiSecret: !!process.env.CLOUDINARY_API_SECRET });
-        return res.status(503).json({
-          error: 'Image upload not configured',
-          details: 'Cloudinary credentials are missing on the server. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET in Render environment variables.'
-        });
-      }
-
       if (!req.file) {
         return res.status(400).json({ error: 'No image provided' });
       }
@@ -1061,18 +1072,44 @@ app.post('/api/upload-image', authMiddleware, adminOnly, (req, res) => {
         return res.status(400).json({ error: validation.error });
       }
 
-      logger.info('Uploading to Cloudinary...');
-      const result = await uploadBufferToCloudinary(req.file.buffer);
+      // Try Cloudinary first if configured
+      if (cloudinaryConfigured) {
+        try {
+          logger.info('Uploading to Cloudinary...');
+          const result = await uploadBufferToCloudinary(req.file.buffer);
+          logger.info(`Image uploaded to Cloudinary: ${result.public_id}`);
+          return res.json({
+            ok: true,
+            url: result.secure_url,
+            public_id: result.public_id,
+            size: result.bytes
+          });
+        } catch (cloudinaryError) {
+          logger.warn('Cloudinary upload failed, falling back to local storage', { error: cloudinaryError.message });
+        }
+      }
 
-      logger.info(`Image uploaded to Cloudinary: ${result.public_id}`);
+      // Fallback to local storage
+      logger.info('Using local storage fallback');
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+      const uploadDir = path.join(__dirname, '../uploads');
+      if (!fs.existsSync(uploadDir)) {
+        fs.mkdirSync(uploadDir, { recursive: true });
+      }
+      const filename = uniqueSuffix + path.extname(req.file.originalname);
+      const filepath = path.join(uploadDir, filename);
+      fs.writeFileSync(filepath, req.file.buffer);
+
+      const url = `${req.protocol}://${req.get('host')}/uploads/${filename}`;
+      logger.info(`Image saved locally: ${filename}`);
       res.json({
         ok: true,
-        url: result.secure_url,
-        public_id: result.public_id,
-        size: result.bytes
+        url: url,
+        filename: filename,
+        size: req.file.size
       });
     } catch (e) {
-      logger.error('Cloudinary upload error', { error: e.message || String(e), stack: e.stack });
+      logger.error('Image upload error', { error: e.message || String(e), stack: e.stack });
       res.status(500).json({ error: 'Image upload failed', details: e.message || String(e) });
     }
   });
