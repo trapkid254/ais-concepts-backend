@@ -1,6 +1,6 @@
 'use strict';
 
-const { fileTypeFromBuffer } = require('file-type');
+const fileType = require('file-type');
 
 const ALLOWED_IMAGE_MIMES = new Set([
   'image/jpeg',
@@ -24,7 +24,7 @@ async function validateImageBuffer(buffer, maxBytes) {
   if (maxBytes && buffer.length > maxBytes) {
     return { ok: false, error: `File exceeds maximum size of ${Math.round(maxBytes / 1024 / 1024)}MB` };
   }
-  const detected = await fileTypeFromBuffer(buffer);
+  const detected = await fileType.fromBuffer(buffer);
   if (!detected || !ALLOWED_IMAGE_MIMES.has(detected.mime)) {
     return { ok: false, error: 'Invalid image type. Allowed: JPEG, PNG, WebP, GIF' };
   }
@@ -38,7 +38,7 @@ async function validateDocumentBuffer(buffer, maxBytes) {
   if (maxBytes && buffer.length > maxBytes) {
     return { ok: false, error: `File exceeds maximum size of ${Math.round(maxBytes / 1024 / 1024)}MB` };
   }
-  const detected = await fileTypeFromBuffer(buffer);
+  const detected = await fileType.fromBuffer(buffer);
   if (!detected || !ALLOWED_DOCUMENT_MIMES.has(detected.mime)) {
     return { ok: false, error: 'Invalid document type. Allowed: PDF, JPEG, PNG, DOC, DOCX' };
   }
