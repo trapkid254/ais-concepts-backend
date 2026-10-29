@@ -171,7 +171,7 @@ const apiLimiter = rateLimit({
 // Login limiter
 const loginLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 3,
+    max: 10,
     standardHeaders: true,
     legacyHeaders: false,
     message: {
@@ -4662,6 +4662,20 @@ app.delete('/api/faqs/:category/:id', authMiddleware, adminOnly, async (req, res
     logger.error('Error deleting FAQ', { error: error.message, stack: error.stack });
     res.status(500).json({ error: 'Server error' });
   }
+});
+
+// Error handling middleware to ensure JSON responses
+app.use((err, req, res, next) => {
+  logger.error('Unhandled error', { error: err.message, stack: err.stack });
+  res.status(err.status || 500).json({
+    error: err.message || 'Internal server error',
+    details: process.env.NODE_ENV === 'development' ? err.stack : undefined
+  });
+});
+
+// 404 handler for API routes
+app.use('/api/*', (req, res) => {
+  res.status(404).json({ error: 'API endpoint not found' });
 });
 
 const server = app.listen(PORT, () => {
